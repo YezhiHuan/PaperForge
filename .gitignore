@@ -1,0 +1,47 @@
+# dependencies
+node_modules/
+
+# build outputs
+dist/
+dist-tauri/target/
+src-tauri/target/
+
+# local env
+.env
+.env.local
+.env.*.local
+
+# local app data
+.local/
+.cache/
+tmp/
+temp/
+
+# generated user workspaces
+workspace/
+workspaces/
+Paper_Project/
+paper_projects/
+user_projects/
+examples/generated/
+test-workspace/
+
+# user manuscript data
+*.docx
+*.pdf
+*.csl
+*.ris
+*.nbib
+
+# vector indexes / embeddings
+*.faiss
+*.index
+embeddings/
+vector_store/
+chroma/
+qdrant_storage/
+lancedb/
+
+# logs
+*.log
+logs/
