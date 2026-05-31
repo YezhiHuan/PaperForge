@@ -7,8 +7,10 @@ import {
   Clipboard,
   Copy,
   Download,
+  ExternalLink,
   FileText,
   Folder,
+  FolderOpen,
   Library,
   Loader2,
   Moon,
@@ -23,6 +25,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { api, defaultSettings } from "./lib/api";
 import { createClaim, formatCitation, markdownToPreview, mergeSections, nowIso } from "./lib/domain";
+import { APP_VERSION } from "./version";
 import type {
   AIProposal,
   AppLog,
@@ -30,6 +33,7 @@ import type {
   CitationStatus,
   CitationTask,
   ClaimRecord,
+  ExportValidationWarning,
   ExportJob,
   LiteratureItem,
   ManuscriptMode,
@@ -60,6 +64,17 @@ const emptyProjectForm = {
   workspaceRoot: ""
 };
 
+const emptyImportForm = {
+  rootPath: ""
+};
+
+function outputFolderFromPath(path: string) {
+  const normalized = path.replace(/\\/g, "/");
+  const lastSlash = normalized.lastIndexOf("/");
+  if (lastSlash <= 0) return path;
+  return path.slice(0, lastSlash);
+}
+
 function App() {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [projects, setProjects] = useState<ProjectConfig[]>([]);
@@ -75,6 +90,8 @@ function App() {
   const [toolTab, setToolTab] = useState<ToolTab>("ai");
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [projectForm, setProjectForm] = useState(emptyProjectForm);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importForm, setImportForm] = useState(emptyImportForm);
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({
     manuscript: true,
     references: true,
@@ -91,6 +108,7 @@ function App() {
   const [litSearching, setLitSearching] = useState(false);
   const [exportJob, setExportJob] = useState<ExportJob | null>(null);
   const [exportRunning, setExportRunning] = useState(false);
+  const [exportWarnings, setExportWarnings] = useState<ExportValidationWarning[]>([]);
   const [draftSettings, setDraftSettings] = useState<AppSettings>(defaultSettings);
   const [claimText, setClaimText] = useState("");
 
@@ -100,15 +118,18 @@ function App() {
   );
 
   const addLog = (level: AppLog["level"], message: string) => {
-    setLogs((current) => [api.appLog(level, message), ...current].slice(0, 8));
+    const log = api.appLog(level, message);
+    setLogs((current) => [log, ...current].slice(0, 8));
+    void api.appendAppLog(log).catch(() => undefined);
   };
 
   useEffect(() => {
     async function boot() {
-      const [loadedSettings, loadedProjects] = await Promise.all([api.readSettings(), api.listProjects()]);
+      const [loadedSettings, loadedProjects, loadedLogs] = await Promise.all([api.readSettings(), api.listProjects(), api.readAppLogs()]);
       setSettings(loadedSettings);
       setDraftSettings(loadedSettings);
       setProjects(loadedProjects);
+      setLogs(loadedLogs.slice(0, 8));
       if (loadedProjects[0]) {
         await selectProject(loadedProjects[0]);
       } else {
@@ -152,6 +173,17 @@ function App() {
     setProjectForm({ ...emptyProjectForm, manuscriptMode: settings.defaultManuscriptMode });
     await selectProject(project);
     addLog("success", "Project structure generated. No .git folder created.");
+  }
+
+  async function importProject(event: FormEvent) {
+    event.preventDefault();
+    const project = await api.importProject({ rootPath: importForm.rootPath });
+    const nextProjects = await api.listProjects();
+    setProjects(nextProjects);
+    setShowImportModal(false);
+    setImportForm(emptyImportForm);
+    await selectProject(project);
+    addLog("success", `Imported existing project folder: ${project.rootPath}`);
   }
 
   async function deleteProject(project: ProjectConfig) {
@@ -281,6 +313,7 @@ function App() {
 
   async function runExport(mode: ManuscriptMode) {
     if (!activeProject) return;
+    setExportWarnings(api.validateExport(mode, sections, references));
     setExportRunning(true);
     setExportJob({ id: "running", projectId: activeProject.id, mode, status: "running", outputPath: "", logs: ["Export running"], createdAt: nowIso() });
     window.setTimeout(async () => {
@@ -289,6 +322,12 @@ function App() {
       setExportRunning(false);
       addLog("success", `${mode} export finished: ${job.outputPath}`);
     }, 620);
+  }
+
+  async function openOutputFolder() {
+    if (!exportJob?.outputPath) return;
+    const opened = await api.openOutputFolder(outputFolderFromPath(exportJob.outputPath));
+    addLog(opened ? "info" : "warning", opened ? "Opened output folder." : "Output folder open unavailable in browser mode.");
   }
 
   async function saveSettings() {
@@ -306,6 +345,7 @@ function App() {
           setProjectForm({ ...emptyProjectForm, manuscriptMode: settings.defaultManuscriptMode });
           setShowCreateModal(true);
         }}
+        version={APP_VERSION}
       />
 
       {!activeProject ? (
@@ -313,6 +353,7 @@ function App() {
           projects={projects}
           onOpen={selectProject}
           onNew={() => setShowCreateModal(true)}
+          onImport={() => setShowImportModal(true)}
           onDelete={deleteProject}
           onExport={exportProjectManifest}
         />
@@ -405,7 +446,9 @@ function App() {
             addClaimRecord={addClaimRecord}
             exportJob={exportJob}
             exportRunning={exportRunning}
+            exportWarnings={exportWarnings}
             runExport={runExport}
+            openOutputFolder={openOutputFolder}
             settings={draftSettings}
             setSettings={setDraftSettings}
             saveSettings={saveSettings}
@@ -426,16 +469,28 @@ function App() {
           />
         )}
       </AnimatePresence>
+
+      <AnimatePresence>
+        {showImportModal && (
+          <ImportProjectModal
+            form={importForm}
+            setForm={setImportForm}
+            onClose={() => setShowImportModal(false)}
+            onSubmit={importProject}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
-function TopBar({ project, onDashboard, onNew }: { project: ProjectConfig | null; onDashboard: () => void; onNew: () => void }) {
+function TopBar({ project, onDashboard, onNew, version }: { project: ProjectConfig | null; onDashboard: () => void; onNew: () => void; version: string }) {
   return (
     <header className="topbar">
       <button className="brand" onClick={onDashboard}>
         <Moon size={18} />
         <span>PaperForge</span>
+        <small>v{version}</small>
       </button>
       <div className="topbar-project">{project ? `${project.title} · ${project.manuscriptMode}` : "Local-first manuscript workspace"}</div>
       <button className="primary-btn" onClick={onNew}>
@@ -449,12 +504,14 @@ function Dashboard({
   projects,
   onOpen,
   onNew,
+  onImport,
   onDelete,
   onExport
 }: {
   projects: ProjectConfig[];
   onOpen: (project: ProjectConfig) => void;
   onNew: () => void;
+  onImport: () => void;
   onDelete: (project: ProjectConfig) => void;
   onExport: (project: ProjectConfig) => void;
 }) {
@@ -465,6 +522,9 @@ function Dashboard({
         <h1>Write papers from local folders, citations, evidence, and AI proposals.</h1>
         <button className="primary-btn large" onClick={onNew}>
           <Plus size={18} /> Create Paper Project
+        </button>
+        <button className="secondary-btn large" onClick={onImport}>
+          <FolderOpen size={18} /> Import Existing
         </button>
       </section>
       <motion.section className="project-grid" initial="hidden" animate="show">
@@ -579,7 +639,9 @@ function RightPanel(props: {
   addClaimRecord: () => void;
   exportJob: ExportJob | null;
   exportRunning: boolean;
+  exportWarnings: ExportValidationWarning[];
   runExport: (mode: ManuscriptMode) => void;
+  openOutputFolder: () => void;
   settings: AppSettings;
   setSettings: (settings: AppSettings) => void;
   saveSettings: () => void;
@@ -753,11 +815,26 @@ function ExportTool(props: Parameters<typeof RightPanel>[0]) {
         <button onClick={() => props.runExport("markdown")}>Markdown/Pandoc</button>
       </div>
       {props.exportRunning && <div className="running-dots">Export running<span>.</span><span>.</span><span>.</span></div>}
+      {props.exportWarnings.length > 0 && (
+        <div className="card-list">
+          {props.exportWarnings.map((warning) => (
+            <div className={`validation-card ${warning.severity}`} key={warning.id}>
+              <strong>{warning.severity}</strong>
+              <span>{warning.message}</span>
+            </div>
+          ))}
+        </div>
+      )}
       {props.exportJob && (
         <div className="proposal-card">
           <span className={`status ${props.exportJob.status}`}>{props.exportJob.status}</span>
           <strong>{props.exportJob.outputPath || "Preparing output"}</strong>
           {props.exportJob.logs.map((line) => <p key={line}>{line}</p>)}
+          {props.exportJob.outputPath && (
+            <button className="secondary-btn wide" onClick={props.openOutputFolder}>
+              <ExternalLink size={14} /> Open output folder
+            </button>
+          )}
         </div>
       )}
       <details>
@@ -838,6 +915,30 @@ function CreateProjectModal({
         </select>
         <input placeholder="Workspace root (optional)" value={form.workspaceRoot} onChange={(event) => setForm({ ...form, workspaceRoot: event.target.value })} />
         <button className="primary-btn wide">Generate local folder structure</button>
+      </motion.form>
+    </motion.div>
+  );
+}
+
+function ImportProjectModal({
+  form,
+  setForm,
+  onClose,
+  onSubmit
+}: {
+  form: typeof emptyImportForm;
+  setForm: (form: typeof emptyImportForm) => void;
+  onClose: () => void;
+  onSubmit: (event: FormEvent) => void;
+}) {
+  return (
+    <motion.div className="modal-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+      <motion.form className="modal" onSubmit={onSubmit} initial={{ opacity: 0, scale: 0.96, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96 }}>
+        <button type="button" className="close-btn" onClick={onClose}><X size={16} /></button>
+        <h2>Import existing project</h2>
+        <p className="modal-note">Enter a PaperForge project folder path. Existing manuscripts are not overwritten.</p>
+        <input required placeholder="F:\\Papers\\My_Project" value={form.rootPath} onChange={(event) => setForm({ rootPath: event.target.value })} />
+        <button className="primary-btn wide"><FolderOpen size={15} /> Import folder</button>
       </motion.form>
     </motion.div>
   );

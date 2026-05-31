@@ -192,6 +192,24 @@ enum ExportStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum AppLogLevel {
+    Info,
+    Warning,
+    Error,
+    Success,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppLog {
+    id: String,
+    level: AppLogLevel,
+    message: String,
+    created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum ThemeMode {
     Dark,
@@ -243,6 +261,10 @@ fn registry_path() -> Result<PathBuf, String> {
 
 fn settings_path() -> Result<PathBuf, String> {
     Ok(local_dir()?.join("settings.json"))
+}
+
+fn app_logs_path() -> Result<PathBuf, String> {
+    Ok(local_dir()?.join("app_logs.json"))
 }
 
 fn safe_folder_name(title: &str) -> String {
@@ -346,24 +368,28 @@ fn ensure_structure(project: &ProjectConfig) -> Result<(), String> {
     for folder in folders {
         fs::create_dir_all(root.join(folder)).map_err(|err| err.to_string())?;
     }
-    fs::write(
-        root.join("project.json"),
-        serde_json::to_string_pretty(project).map_err(|err| err.to_string())?,
-    )
-    .map_err(|err| err.to_string())?;
-    fs::write(root.join("manuscript/paper.docx"), []).map_err(|err| err.to_string())?;
-    fs::write(root.join("manuscript/main.tex"), basic_latex_template()).map_err(|err| err.to_string())?;
-    fs::write(root.join("references/references.bib"), "").map_err(|err| err.to_string())?;
-    fs::write(root.join("templates/word_template.docx"), []).map_err(|err| err.to_string())?;
-    fs::write(root.join("ai/claims.json"), "[]").map_err(|err| err.to_string())?;
-    fs::write(root.join("literature/literature.json"), "[]").map_err(|err| err.to_string())?;
+    write_if_missing(
+        &root.join("project.json"),
+        serde_json::to_string_pretty(project).map_err(|err| err.to_string())?.as_bytes(),
+    )?;
+    write_if_missing(&root.join("manuscript/paper.docx"), &[])?;
+    write_if_missing(&root.join("manuscript/main.tex"), basic_latex_template().as_bytes())?;
+    write_if_missing(&root.join("references/references.bib"), b"")?;
+    write_if_missing(&root.join("templates/word_template.docx"), &[])?;
+    write_if_missing(&root.join("ai/claims.json"), b"[]")?;
+    write_if_missing(&root.join("literature/literature.json"), b"[]")?;
     for section in initial_sections() {
         let path = root.join("manuscript/sections").join(&section.filename);
-        if !path.exists() {
-            fs::write(path, section.content).map_err(|err| err.to_string())?;
-        }
+        write_if_missing(&path, section.content.as_bytes())?;
     }
     Ok(())
+}
+
+fn write_if_missing(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if path.exists() {
+        return Ok(());
+    }
+    fs::write(path, bytes).map_err(|err| err.to_string())
 }
 
 fn basic_latex_template() -> &'static str {
@@ -384,6 +410,21 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
         serde_json::to_string_pretty(value).map_err(|err| err.to_string())?,
     )
     .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn read_app_logs() -> Result<Vec<AppLog>, String> {
+    read_json_vec(&app_logs_path()?)
+}
+
+#[tauri::command]
+fn append_app_log(log: AppLog) -> Result<Vec<AppLog>, String> {
+    let path = app_logs_path()?;
+    let mut logs: Vec<AppLog> = read_json_vec(&path)?;
+    logs.insert(0, log);
+    logs.truncate(80);
+    write_json(&path, &logs)?;
+    Ok(logs)
 }
 
 #[tauri::command]
@@ -429,6 +470,48 @@ fn create_project(input: ProjectCreateInput) -> Result<ProjectConfig, String> {
     };
     ensure_structure(&project)?;
     let mut projects = read_registry()?;
+    projects.insert(0, project.clone());
+    write_registry(&projects)?;
+    Ok(project)
+}
+
+#[tauri::command]
+fn import_project_folder(root_path: String) -> Result<ProjectConfig, String> {
+    let root = PathBuf::from(root_path.trim());
+    if root.as_os_str().is_empty() {
+        return Err("Project folder path is required".to_string());
+    }
+    fs::create_dir_all(&root).map_err(|err| err.to_string())?;
+    let project_json = root.join("project.json");
+    let mut project = if project_json.exists() {
+        let raw = fs::read_to_string(&project_json).map_err(|err| err.to_string())?;
+        serde_json::from_str::<ProjectConfig>(&raw).map_err(|err| err.to_string())?
+    } else {
+        let title = root
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("Imported Paper")
+            .replace('_', " ");
+        let timestamp = now_iso();
+        ProjectConfig {
+            id: format!("project_{}", Uuid::new_v4()),
+            title,
+            author: String::new(),
+            target_journal: String::new(),
+            manuscript_mode: ManuscriptMode::Word,
+            root_path: root.to_string_lossy().to_string(),
+            created_at: timestamp.clone(),
+            updated_at: timestamp,
+            citation_backend: CitationBackend::ZoteroWordPlugin,
+        }
+    };
+    project.root_path = root.to_string_lossy().to_string();
+    if project.id.trim().is_empty() {
+        project.id = format!("project_{}", Uuid::new_v4());
+    }
+    ensure_structure(&project)?;
+    let mut projects = read_registry()?;
+    projects.retain(|item| item.id != project.id && item.root_path != project.root_path);
     projects.insert(0, project.clone());
     write_registry(&projects)?;
     Ok(project)
@@ -800,12 +883,33 @@ fn merged_sections(project_id: &str) -> Result<String, String> {
         .join("\n\n"))
 }
 
+fn convert_citations_for_mode(markdown: &str, mode: &ManuscriptMode) -> Result<String, String> {
+    let word_re = Regex::new(r"\[CITE:\s*([A-Za-z0-9_:.+-]+)\s*\]").map_err(|err| err.to_string())?;
+    let pandoc_re = Regex::new(r"\[@([A-Za-z0-9_:.+-]+)\]").map_err(|err| err.to_string())?;
+    let latex_re = Regex::new(r"\\cite\{([^}]+)\}").map_err(|err| err.to_string())?;
+    let converted = match mode {
+        ManuscriptMode::Word => {
+            let step = latex_re.replace_all(markdown, |captures: &regex::Captures| format!("[CITE: {}]", captures[1].trim()));
+            pandoc_re.replace_all(&step, |captures: &regex::Captures| format!("[CITE: {}]", captures[1].trim())).to_string()
+        }
+        ManuscriptMode::Latex => {
+            let step = word_re.replace_all(markdown, |captures: &regex::Captures| format!("\\cite{{{}}}", captures[1].trim()));
+            pandoc_re.replace_all(&step, |captures: &regex::Captures| format!("\\cite{{{}}}", captures[1].trim())).to_string()
+        }
+        ManuscriptMode::Markdown => {
+            let step = word_re.replace_all(markdown, |captures: &regex::Captures| format!("[@{}]", captures[1].trim()));
+            latex_re.replace_all(&step, |captures: &regex::Captures| format!("[@{}]", captures[1].trim())).to_string()
+        }
+    };
+    Ok(converted)
+}
+
 #[tauri::command]
 fn export_word_draft(project_id: String) -> Result<ExportJob, String> {
     let project = project_by_id(&project_id)?;
     let root = PathBuf::from(&project.root_path);
     let output = root.join("outputs/combined_word_draft.md");
-    fs::write(&output, merged_sections(&project_id)?).map_err(|err| err.to_string())?;
+    fs::write(&output, convert_citations_for_mode(&merged_sections(&project_id)?, &ManuscriptMode::Word)?).map_err(|err| err.to_string())?;
     let tasks = scan_citation_tasks(project_id.clone())?;
     write_json(&root.join("outputs/citation_tasks.json"), &tasks)?;
     Ok(ExportJob {
@@ -828,9 +932,7 @@ fn export_latex(project_id: String) -> Result<ExportJob, String> {
     let project = project_by_id(&project_id)?;
     let root = PathBuf::from(&project.root_path);
     let output = root.join("outputs/main.tex");
-    let body = merged_sections(&project_id)?
-        .replace("[CITE: ", "\\cite{")
-        .replace(']', "}");
+    let body = convert_citations_for_mode(&merged_sections(&project_id)?, &ManuscriptMode::Latex)?;
     let tex = format!("\\documentclass{{article}}\n\\usepackage[utf8]{{inputenc}}\n\\begin{{document}}\n\n{}\n\n\\bibliographystyle{{plain}}\n\\bibliography{{references}}\n\\end{{document}}\n", body);
     fs::write(&output, tex).map_err(|err| err.to_string())?;
     let bib_src = root.join("references/references.bib");
@@ -854,7 +956,7 @@ fn export_markdown_pandoc(project_id: String) -> Result<ExportJob, String> {
     let project = project_by_id(&project_id)?;
     let root = PathBuf::from(&project.root_path);
     let output = root.join("outputs/combined.md");
-    fs::write(&output, merged_sections(&project_id)?).map_err(|err| err.to_string())?;
+    fs::write(&output, convert_citations_for_mode(&merged_sections(&project_id)?, &ManuscriptMode::Markdown)?).map_err(|err| err.to_string())?;
     let command = "pandoc combined.md --bibliography ../references/references.bib --csl ../references/csl/style.csl -o paper.docx";
     fs::write(root.join("outputs/pandoc_command.txt"), command).map_err(|err| err.to_string())?;
     Ok(ExportJob {
@@ -868,11 +970,40 @@ fn export_markdown_pandoc(project_id: String) -> Result<ExportJob, String> {
     })
 }
 
+#[tauri::command]
+fn open_path(path: String) -> Result<bool, String> {
+    let target = PathBuf::from(path);
+    if !target.exists() {
+        return Err("Path does not exist".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("explorer");
+        command.arg(target);
+        command
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        command.arg(target);
+        command
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(target);
+        command
+    };
+    command.spawn().map_err(|err| err.to_string())?;
+    Ok(true)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             create_project,
+            import_project_folder,
             list_projects,
             open_project,
             read_project_config,
@@ -903,6 +1034,10 @@ pub fn run() {
             save_settings,
             generate_ai_proposal,
             apply_ai_proposal
+            ,
+            read_app_logs,
+            append_app_log,
+            open_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

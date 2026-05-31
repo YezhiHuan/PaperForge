@@ -3,6 +3,7 @@ import type {
   CitationBackend,
   CitationTask,
   ClaimRecord,
+  ExportValidationWarning,
   LiteratureItem,
   ManuscriptMode,
   ManuscriptSection,
@@ -118,6 +119,52 @@ export function formatCitation(mode: ManuscriptMode, citekey: string) {
   if (mode === "word") return `[CITE: ${clean}]`;
   if (mode === "latex") return `\\cite{${clean}}`;
   return `[@${clean}]`;
+}
+
+export function convertCitationsForMode(markdown: string, mode: ManuscriptMode) {
+  if (mode === "word") {
+    return markdown
+      .replace(/\\cite\{([^}]+)\}/g, (_match, citekey: string) => `[CITE: ${citekey.trim()}]`)
+      .replace(/\[@([A-Za-z0-9_:.+-]+)\]/g, (_match, citekey: string) => `[CITE: ${citekey.trim()}]`);
+  }
+  if (mode === "latex") {
+    return markdown
+      .replace(/\[CITE:\s*([A-Za-z0-9_:.+-]+)\s*\]/g, (_match, citekey: string) => `\\cite{${citekey.trim()}}`)
+      .replace(/\[@([A-Za-z0-9_:.+-]+)\]/g, (_match, citekey: string) => `\\cite{${citekey.trim()}}`);
+  }
+  return markdown
+    .replace(/\[CITE:\s*([A-Za-z0-9_:.+-]+)\s*\]/g, (_match, citekey: string) => `[@${citekey.trim()}]`)
+    .replace(/\\cite\{([^}]+)\}/g, (_match, citekey: string) => `[@${citekey.trim()}]`);
+}
+
+export function validateExportDraft(mode: ManuscriptMode, sections: ManuscriptSection[], references: ReferenceItem[]): ExportValidationWarning[] {
+  const draft = mergeSections(sections);
+  const referenceKeys = new Set(references.map((reference) => reference.citekey));
+  const warnings: ExportValidationWarning[] = [];
+  const add = (severity: ExportValidationWarning["severity"], message: string) => {
+    warnings.push({ id: makeId("export_warning"), severity, message });
+  };
+
+  if (!draft.trim()) {
+    add("error", "Draft has no manuscript content.");
+  }
+  if (references.length === 0) {
+    add("warning", "No references saved. Citation metadata may be missing.");
+  }
+  if (mode === "word") {
+    const placeholders = [...draft.matchAll(/\[CITE:\s*([A-Za-z0-9_:.+-]+)\s*\]/g)];
+    const missing = placeholders.map((match) => match[1]).filter((citekey) => !referenceKeys.has(citekey));
+    if (placeholders.length > 0) add("info", `${placeholders.length} Word citation placeholder(s) will stay for Zotero Word plugin.`);
+    if (missing.length > 0) add("warning", `Missing reference metadata for: ${[...new Set(missing)].join(", ")}.`);
+  }
+  if (mode === "latex" && /\[CITE:|\[@/.test(draft)) {
+    add("info", "Word/Pandoc citation markers will be converted to LaTeX \\cite{}.");
+  }
+  if (mode === "markdown" && /\\cite\{|\[CITE:/.test(draft)) {
+    add("info", "Word/LaTeX citation markers will be converted to Pandoc [@key].");
+  }
+
+  return warnings;
 }
 
 function getBibField(body: string, field: string) {

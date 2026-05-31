@@ -7,6 +7,7 @@ export type ClaimStatus = "verified" | "needs_citation" | "unsupported";
 export type ExportStatus = "pending" | "running" | "success" | "failed";
 export type AppLogLevel = "info" | "warning" | "error" | "success";
 export type ThemeMode = "dark" | "light" | "eyeCare";
+export type ExportWarningSeverity = "info" | "warning" | "error";
 
 export interface ProjectConfig {
   id: string;
@@ -26,6 +27,10 @@ export interface ProjectCreateInput {
   targetJournal: string;
   manuscriptMode: ManuscriptMode;
   workspaceRoot?: string;
+}
+
+export interface ProjectImportInput {
+  rootPath: string;
 }
 
 export interface ManuscriptSection {
@@ -97,6 +102,12 @@ export interface ExportJob {
   outputPath: string;
   logs: string[];
   createdAt: string;
+}
+
+export interface ExportValidationWarning {
+  id: string;
+  severity: ExportWarningSeverity;
+  message: string;
 }
 
 export interface AppLog {

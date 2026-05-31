@@ -1,20 +1,24 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AIProposal,
+  AppLog,
   AppSettings,
   CitationStatus,
   CitationTask,
   ClaimRecord,
   ExportJob,
+  ExportValidationWarning,
   LiteratureItem,
   ManuscriptMode,
   ManuscriptSection,
   ProjectConfig,
   ProjectCreateInput,
+  ProjectImportInput,
   ReferenceItem
 } from "../types";
 import {
   appLog,
+  convertCitationsForMode,
   createInitialSections,
   createProjectConfig,
   makeId,
@@ -23,7 +27,8 @@ import {
   parseBibtexEntries,
   safeFolderName,
   scanWordCitationTasks,
-  searchLiteratureMock
+  searchLiteratureMock,
+  validateExportDraft
 } from "./domain";
 
 declare global {
@@ -45,6 +50,7 @@ interface BrowserState {
   literatureByProject: Record<string, LiteratureItem[]>;
   claimsByProject: Record<string, ClaimRecord[]>;
   proposalsByProject: Record<string, AIProposal[]>;
+  logs: AppLog[];
   settings: AppSettings;
 }
 
@@ -70,6 +76,7 @@ const emptyState = (): BrowserState => ({
   literatureByProject: {},
   claimsByProject: {},
   proposalsByProject: {},
+  logs: [],
   settings: defaultSettings
 });
 
@@ -122,12 +129,52 @@ export const api = {
     return tauriOrBrowser<ProjectConfig[]>("list_projects", {}, () => loadState().projects);
   },
 
+  readAppLogs() {
+    return tauriOrBrowser<AppLog[]>("read_app_logs", {}, () => loadState().logs ?? []);
+  },
+
+  appendAppLog(log: AppLog) {
+    return tauriOrBrowser<AppLog[]>("append_app_log", { log }, () => {
+      const state = loadState();
+      state.logs = [log, ...(state.logs ?? [])].slice(0, 80);
+      saveState(state);
+      return state.logs;
+    });
+  },
+
   createProject(input: ProjectCreateInput) {
     return tauriOrBrowser<ProjectConfig>("create_project", { input }, () => {
       const state = loadState();
       const rootPath = `${input.workspaceRoot || state.settings.workspaceRoot}/${safeFolderName(input.title)}`;
       const project = createProjectConfig(input, rootPath);
       state.projects = [project, ...state.projects];
+      state.sectionsByProject[project.id] = createInitialSections();
+      state.referencesByProject[project.id] = [];
+      state.bibtexByProject[project.id] = "";
+      state.citationTasksByProject[project.id] = [];
+      state.literatureByProject[project.id] = [];
+      state.claimsByProject[project.id] = [];
+      state.proposalsByProject[project.id] = [];
+      saveState(state);
+      return project;
+    });
+  },
+
+  importProject(input: ProjectImportInput) {
+    return tauriOrBrowser<ProjectConfig>("import_project_folder", { rootPath: input.rootPath }, () => {
+      const state = loadState();
+      const folderName = input.rootPath.trim().split(/[\\/]/).filter(Boolean).pop() ?? "Imported_Project";
+      const project = createProjectConfig(
+        {
+          title: folderName.replace(/_/g, " "),
+          author: "",
+          targetJournal: "",
+          manuscriptMode: state.settings.defaultManuscriptMode,
+          workspaceRoot: input.rootPath
+        },
+        input.rootPath.trim()
+      );
+      state.projects = [project, ...state.projects.filter((item) => item.rootPath !== project.rootPath)];
       state.sectionsByProject[project.id] = createInitialSections();
       state.referencesByProject[project.id] = [];
       state.bibtexByProject[project.id] = "";
@@ -394,10 +441,18 @@ export const api = {
           : mode === "latex"
             ? "LaTeX export uses \\cite{key} and references.bib."
             : "Markdown/Pandoc export uses [@key] syntax.",
-        mergeSections(sections).slice(0, 80)
+        convertCitationsForMode(mergeSections(sections), mode).slice(0, 80)
       ],
       createdAt: nowIso()
     }));
+  },
+
+  validateExport(mode: ManuscriptMode, sections: ManuscriptSection[], references: ReferenceItem[]): ExportValidationWarning[] {
+    return validateExportDraft(mode, sections, references);
+  },
+
+  openOutputFolder(path: string) {
+    return tauriOrBrowser<boolean>("open_path", { path }, () => Boolean(path));
   },
 
   appLog

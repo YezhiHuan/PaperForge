@@ -1,5 +1,7 @@
 # PaperForge
 
+Current version: `0.2.0`
+
 PaperForge is a local-first AI manuscript writing workspace. One paper is one local folder containing drafts, references, literature records, outputs, templates, figures, data, and AI writing history.
 
 PaperForge is an integration layer, not a Word, LaTeX, or Zotero replacement.
@@ -7,7 +9,7 @@ PaperForge is an integration layer, not a Word, LaTeX, or Zotero replacement.
 ## Core Features
 
 - Project dashboard with animated project cards and create-project modal.
-- Project manifest export and safe project removal from the app list.
+- Project manifest export, import existing project folder flow, and safe project removal from the app list.
 - Paper project generator with manuscript, references, literature, templates, figures, data, AI, and outputs folders.
 - Three-panel research writing IDE: explorer, manuscript editor, assistant/tools.
 - Markdown section editing, preview, save flow, and citation insertion.
@@ -17,6 +19,8 @@ PaperForge is an integration layer, not a Word, LaTeX, or Zotero replacement.
 - Mock-first AI assistant with OpenAI-compatible provider settings.
 - Claims list for evidence-based writing groundwork.
 - Word, LaTeX, and Markdown/Pandoc export panels.
+- Export validation warnings and output-folder opening in desktop mode.
+- Persistent app activity logs stored in local app config.
 - Local settings for workspace root, manuscript mode, provider config, citation style, and export mode.
 - Dark, light, and eye-care color themes.
 
@@ -72,6 +76,12 @@ Paper_Project/
 
 PaperForge currently does not initialize Git repositories inside paper project folders.
 
+## Import Existing Project
+
+Use **Import Existing** on the dashboard and enter a PaperForge project folder path.
+
+If `project.json` exists, PaperForge registers that project. If it is missing, PaperForge creates a minimal project manifest and missing MVP folders without overwriting existing manuscript files.
+
 ## Word Citation Workflow
 
 Word mode uses placeholders such as `[CITE: Zhang2023]`.
@@ -82,7 +92,7 @@ Exports keep placeholders and generate `citation_tasks.json` so pending citation
 
 ## LaTeX Citation Workflow
 
-LaTeX mode inserts `\cite{Zhang2023}` and writes `references.bib`. Export generates `main.tex` using current Markdown sections and a basic template.
+LaTeX mode inserts `\cite{Zhang2023}` and writes `references.bib`. Export generates `main.tex` using current Markdown sections and a basic template. Word placeholders and Pandoc citations are converted with targeted citation regexes, not broad bracket replacement.
 
 ## Markdown / Pandoc Workflow
 
@@ -140,6 +150,20 @@ MVP intentionally omits per-paper Git features:
 - Settings storage is local app config/localStorage, not secure OS keychain.
 - Project removal from the dashboard removes the project from PaperForge's list; it does not delete local manuscript files.
 - SQLite interface is reserved for later migration.
+
+## Version History
+
+### 0.2.0
+
+- Added persistent app activity logs.
+- Added import/open existing project folder flow.
+- Added export validation warnings and desktop output-folder opener.
+- Improved citation conversion for Word, LaTeX, and Markdown/Pandoc export.
+- Added visible app version.
+
+### 0.1.0
+
+- Initial MVP: project dashboard, folder generator, writing IDE, citations, references, mock literature search, AI proposals, claims, exports, settings, and themes.
 
 ## Roadmap
 
