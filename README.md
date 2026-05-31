@@ -1,284 +1,254 @@
 # PaperForge
 
-Current version: `0.3.2`
+Current version: `1.0.0`
 
-PaperForge is a local-first AI manuscript writing workspace. One paper is one local folder containing drafts, references, literature records, outputs, templates, figures, data, and AI writing history.
+PaperForge is a local-first AI manuscript writing desktop app. It organizes papers as local folders and connects Markdown sections, references, attachments, exports, and replaceable AI model settings.
 
-PaperForge is an integration layer, not a Word, LaTeX, or Zotero replacement.
-
-## Core Features
-
-- Project dashboard with animated project cards and create-project modal.
-- English and Chinese UI language switching from Settings, persisted locally.
-- Import existing project folder flow and safe project removal from the app list.
-- Paper project generator with manuscript, references, literature, templates, figures, data, AI, and outputs folders.
-- Optional paper title, author, and journal metadata with safe defaults.
-- Editable paper title from the dashboard, IDE header, and Project Info panel.
-- Optional manuscript section initialization: empty by default, template-based, or custom section names.
-- Three-panel research writing IDE: explorer, manuscript editor, assistant/tools.
-- Markdown section editing, preview, workspace-backed save flow, section creation/rename, and citation insertion.
-- Better BibTeX paste/import parser for citekey, title, author, year, journal, DOI.
-- Word citation task scanner for `[CITE: key]` placeholders.
-- Literature PDF record library with mock search and replaceable embedding status.
-- Mock-first AI assistant with OpenAI-compatible provider settings.
-- Claims list for evidence-based writing groundwork.
-- Markdown package export as the current stable export path.
-- Word and LaTeX export placeholders with staged architecture for future exporters.
-- Export validation warnings and output-folder opening in desktop mode.
-- Persistent app activity logs stored in local app config.
-- Local settings for workspace root, manuscript mode, provider config, citation style, and export mode.
-- Dark, light, and eye-care color themes.
-
-## Tech Stack
-
-- Desktop shell: Tauri 2
-- Frontend: React, TypeScript, Vite
-- Styling: Tailwind CSS plus scoped app CSS
-- Motion: Framer Motion and CSS transitions
-- Icons: lucide-react
-- Local persistence: Tauri file commands, browser fallback via localStorage
-- Vector search: mock interface now, replaceable later
-- LLM: OpenAI-compatible provider config with mock response fallback
+PaperForge does not replace Word, LaTeX, or Zotero. It is an integration and writing-assistance layer.
 
 ## Install
 
 ```bash
+git clone https://github.com/YezhiHuan/PaperForge.git
+cd PaperForge
 npm install
 ```
 
-## Development Commands
+## Development
 
 ```bash
-npm run dev
-npm run typecheck
-npm run build
 npm run tauri dev
 ```
 
-Lint is not configured in this MVP. Use `npm run typecheck` and `npm run build` for current verification.
+Useful checks:
 
-## Create Paper Project
-
-Open the app, select **New Project**, then enter any metadata you want. Title, authors, target journal, citation style, writing mode, export mode, and sections are all optional.
-
-If title, authors, or journal are blank, PaperForge writes safe defaults to `paperforge.project.json`:
-
-- title: `Untitled Paper`
-- authors: `[]`
-- journal: `Unspecified Journal`
-
-Manuscript sections are optional. Default is **Empty manuscript**, so PaperForge creates `manuscript/sections/` but does not force `01_abstract.md`, `02_introduction.md`, or other standard section files.
-
-You can choose a section template or customize names:
-
-- Empty manuscript
-- Standard research paper
-- Engineering simulation paper
-- Review paper
-
-Custom section names support Chinese and English. Blank section names are ignored. Duplicate generated filenames get a suffix, such as `introduction_2.md`.
-
-Section file naming supports:
-
-- `numbered`: `01_abstract.md`, `02_introduction.md`
-- `slug only`: `abstract.md`, `introduction.md`
-
-For Chinese or non-slug titles, PaperForge uses safe fallbacks such as `01_section.md` or `section-001.md`.
-
-Generated structure:
-
-```text
-Paper_Project/
-├─ paperforge.project.json
-├─ project.json
-├─ manuscript/
-│  ├─ sections/
-│  ├─ paper.docx
-│  └─ main.tex
-├─ references/
-├─ literature/
-├─ templates/
-├─ figures/
-├─ data/
-├─ ai/
-└─ outputs/
+```bash
+npm run typecheck
+npm run build
+npm run tauri build
 ```
 
-PaperForge currently does not initialize Git repositories inside paper project folders.
+Lint is not configured in v1.0.0.
 
-By default, project folders are created under `workspace/`. Each paper is a child folder, such as:
+## Workspace Init
 
-```text
-workspace/
-└─ Untitled_Paper/
-   ├─ paperforge.project.json
-   └─ manuscript/
-      └─ sections/
-         └─ 01_introduction.md
+`paperforge init` initializes the global PaperForge workspace. It does not create a paper project.
+
+Portable npm script:
+
+```bash
+npm run paperforge:init
 ```
 
-The repository `.gitignore` excludes `workspace/`, so generated manuscript projects stay out of source control.
+Direct CLI entry is also included as `scripts/paperforge.mjs` and exposed through package `bin` for future global installs.
 
-After project creation, the IDE can add new sections from the project tree or empty manuscript state. Pressing **Save** writes the active Markdown section to `manuscript/sections/*.md` inside that paper's workspace folder. Section rename changes the title in `paperforge.project.json`; existing Markdown file paths are kept unless explicit file rename support is added later.
+Default workspace:
 
-Paper title edits update the current UI, dashboard list, `paperforge.project.json`, and `updatedAt`. PaperForge does not rename the local project folder automatically.
+```text
+PaperForgeWorkspace/
+├─ .paperforge/
+│  ├─ workspace.json
+│  ├─ ai-models.json
+│  ├─ settings.json
+│  └─ history.log
+└─ papers/
+```
 
-Section structure is persisted in `paperforge.project.json`:
+`papers/` starts empty. Paper folders are created only from New Paper in the app.
+
+`workspace.json`:
 
 ```json
 {
-  "manuscript": {
-    "sectionNaming": "numbered",
-    "sections": []
-  }
+  "version": "1.0.0",
+  "workspaceName": "PaperForge Workspace",
+  "createdAt": "...",
+  "updatedAt": "...",
+  "papersDir": "papers",
+  "defaultLanguage": "en"
 }
 ```
 
-## Import Existing Project
+## AI Model CLI
 
-Use **Import Existing** on the dashboard and enter a PaperForge project folder path.
-
-If `paperforge.project.json` or legacy `project.json` exists, PaperForge registers that project. If no manifest exists, PaperForge creates a minimal project manifest and missing MVP folders without overwriting existing manuscript files.
-
-## Language and Settings
-
-Settings live in the sidebar footer. Select and toggle settings apply immediately and persist locally, including theme, language, default writing mode, citation style, and export mode. Text settings are written through the same settings persistence path and are not stored in paper project manifests.
-
-## Word Citation Workflow
-
-Word mode uses placeholders such as `[CITE: Zhang2023]`.
-
-PaperForge does not write Zotero Word citation fields. Users should use Zotero Word plugin later to insert final references and bibliography.
-
-Markdown package export keeps Word placeholders when the manuscript mode uses them. Word `.docx` generation is intentionally staged for a later release.
-
-## LaTeX Citation Workflow
-
-LaTeX mode inserts `\cite{Zhang2023}` and writes `references.bib`. Full LaTeX project export is intentionally staged for a later release.
-
-## Markdown / Pandoc Workflow
-
-Markdown mode inserts `[@Zhang2023]`. The stable export is **Export Markdown Package**, which creates:
+AI model config is saved to:
 
 ```text
-outputs/
-└─ paperforge-export-YYYYMMDD-HHMMSS/
-   ├─ manifest.json
-   ├─ manuscript.md
-   ├─ sections/
-   ├─ references/
-   ├─ literature/
-   ├─ figures/
-   ├─ data/
-   ├─ claims/
-   └─ export-report.json
+PaperForgeWorkspace/.paperforge/ai-models.json
 ```
 
-Missing optional files are recorded in `export-report.json` instead of failing the export.
+Commands:
 
-Future Word route: Markdown package -> Pandoc -> DOCX, optionally with `reference.docx`. Zotero Word fields should still be inserted in Word through the Zotero plugin; PaperForge keeps `[CITE: key]` placeholders.
+```bash
+npm run paperforge:model:add -- --provider openai-compatible --name local --base-url http://localhost:11434/v1 --api-key YOUR_API_KEY --model llama3
+npm run paperforge:model:list
+npm run paperforge:model:set-default -- local
+npm run paperforge:model:remove -- local
+```
 
-Future LaTeX route: generate `main.tex`, section `.tex` files, copy `references.bib`, and copy figures. Markdown-to-LaTeX conversion should use Pandoc or a staged converter, not fragile ad hoc string hacks.
+Supported providers:
 
-## Zotero / Better BibTeX
+- `openai-compatible`
+- `openai`
+- `anthropic`
 
-Recommended flow:
+Model fields:
 
-1. Manage real references in Zotero.
-2. Export Better BibTeX as `references.bib`.
-3. Paste or import BibTeX into PaperForge.
-4. Insert citation syntax appropriate to manuscript mode.
+- `provider`
+- `name`
+- `baseUrl`
+- `apiKey`
+- `model`
+- `temperature`
+- `maxTokens`
 
-## AI Provider Settings
+Do not commit `ai-models.json`; it may contain API keys.
 
-Settings support:
+## Paper Projects
 
-- Base URL
-- API key
-- Model
+In the app, click New Paper. Title, authors, and journal are optional.
 
-API keys are not stored in `paperforge.project.json` or `project.json`. MVP stores settings in local app config or browser localStorage fallback. Later versions should use OS secure storage.
+New paper structure:
 
-When API key is missing, AI actions return clearly labeled mock proposals.
+```text
+PaperForgeWorkspace/
+└─ papers/
+   └─ MyPaper/
+      ├─ paperforge.json
+      ├─ manuscript/
+      │  └─ sections/
+      ├─ references/
+      │  ├─ papers/
+      │  ├─ bib/
+      │  └─ notes/
+      ├─ attachments/
+      │  ├─ figures/
+      │  ├─ tables/
+      │  ├─ raw-data/
+      │  └─ supplementary/
+      ├─ exports/
+      │  ├─ markdown/
+      │  ├─ json/
+      │  ├─ word/
+      │  └─ latex/
+      └─ .paperforge/
+         └─ history.log
+```
 
-## UI Design
+`paperforge.json` keeps metadata and section paths:
 
-The UI uses a dense research IDE layout:
+```json
+{
+  "version": "1.0.0",
+  "title": "Untitled Paper",
+  "authors": [],
+  "journal": "",
+  "language": "en",
+  "createdAt": "...",
+  "updatedAt": "...",
+  "sections": []
+}
+```
 
-- Left: project tree
-- Center: section editor and preview
-- Right: AI, references, citations, literature, export, settings
-- Sidebar footer: Settings
-- Design/build notes can be written under `logs/`; that folder is ignored by Git.
+Implementation keeps compatibility fields such as `targetJournal` and `manuscript.sections` for current app code.
 
-Motion is restrained: project card entrance, file tree expand/collapse, editor/preview fade, modal overlay/content transitions, AI proposal reveal, loading skeletons, export running dots.
+Empty manuscript is valid. PaperForge creates `manuscript/sections/` but does not create `01_abstract.md`, `02_introduction.md`, or fixed default sections.
 
-## No Paper Git Controls
+## References And Attachments
 
-MVP intentionally omits per-paper Git features:
+References:
 
-- No paper project `git init`
-- No paper Git status
-- No paper Git commits
-- No recent commit panel
-- No paper version panel
+- PDFs or literature records: `references/papers/`
+- BibTeX: `references/bib/references.bib`
+- Notes: `references/notes/`
 
-## MVP Limits
+Attachments:
 
-- PDF handling records file metadata only; no full-text parsing.
-- Literature search is mock/local search, not embedding-backed.
-- AI provider abstraction exists, but missing API key uses mock responses.
-- Word export keeps citation placeholders.
-- Settings storage is local app config/localStorage, not secure OS keychain.
-- Project removal from the dashboard removes the project from PaperForge's list; it does not delete local manuscript files.
-- SQLite interface is reserved for later migration.
+- Figures: `attachments/figures/`
+- Tables: `attachments/tables/`
+- Raw data: `attachments/raw-data/`
+- Supplementary files: `attachments/supplementary/`
 
-## Version History
+## Citation Modes
 
-### 0.3.2
+Word mode uses:
 
-- Dashboard project cards now show edit/delete icon actions only.
-- Removed dashboard export action.
-- Clarified and tested workspace-backed Markdown saves.
-- Removed placeholder MVP folder labels from the project tree.
+```text
+[CITE: Smith2023]
+```
 
-### 0.3.1
+LaTeX mode uses:
 
-- Added English/Chinese UI switching.
-- Made paper title, author, and journal optional with persisted defaults.
-- Added title editing from dashboard, IDE header, and Project Info.
-- Added Markdown package export and future Word/LaTeX exporter placeholders.
-- Removed the bottom status strip and improved sidebar/dropdown contrast.
-- Settings now apply immediately.
+```tex
+\cite{Smith2023}
+```
 
-### 0.3.0
+Markdown / Pandoc mode uses:
 
-- Added optional manuscript section initialization.
-- Empty manuscript is default for new projects.
-- Added section templates and custom section names.
-- Added section naming mode: numbered or slug only.
-- Added add-section and rename-section support in the IDE.
-- Persisted section title/path/order/status in `paperforge.project.json`.
+```text
+[@Smith2023]
+```
 
-### 0.2.0
+PaperForge does not generate Zotero Word fields. Use Zotero Word plugin for final Word citations.
 
-- Added persistent app activity logs.
-- Added import/open existing project folder flow.
-- Added export validation warnings and desktop output-folder opener.
-- Improved citation conversion for Word, LaTeX, and Markdown/Pandoc export.
-- Added visible app version.
+## Export
 
-### 0.1.0
+v1.0.0 supports:
 
-- Initial MVP: project dashboard, folder generator, writing IDE, citations, references, mock literature search, AI proposals, claims, exports, settings, and themes.
+- Export JSON: writes current paper config to `exports/json/paperforge.json`
+- Export Markdown: writes a package under `exports/markdown/` with `paper.md`, sections, references, attachments, claims, and `export-report.json`
+- Export Project Folder: writes a project folder snapshot under `exports/project-folder/`
+
+Word and LaTeX buttons are placeholders marked Coming soon.
+
+## UI
+
+The app title displays `PaperForge v1.0.0`.
+
+Layout:
+
+- Left sidebar: Workspace, Papers, Manuscript, References, Attachments, AI Models, Export
+- Center: manuscript editor / preview
+- Right: AI assistant, references, citation tasks, literature, export, settings
+- Settings: sidebar footer, saved immediately
+- Language: English / Chinese switch
+
+## Persistence
+
+Desktop mode uses Tauri filesystem commands. Browser fallback uses `localStorage`.
+
+Workspace path defaults to `PaperForgeWorkspace`.
+
+Paper projects live under:
+
+```text
+PaperForgeWorkspace/papers/
+```
+
+AI model config lives under:
+
+```text
+PaperForgeWorkspace/.paperforge/ai-models.json
+```
+
+The repository ignores generated workspaces and local secrets.
+
+## v1.0.0 Limits
+
+- Direct global `paperforge` command may require `npm link` or package installation; npm scripts work from the clone.
+- Tauri file picker is not implemented; workspace/project paths can be typed.
+- AI calls remain mock/provider-abstraction; model config is persisted but providers are not fully wired.
+- Word export and LaTeX export are Coming soon.
+- PDF parsing, vector search, Zotero local API, and secure OS secret storage are not implemented.
+- Project folder export is a snapshot, not a Git operation.
+- Dashboard project list is app-local registry backed by Tauri/localStorage.
 
 ## Roadmap
 
-- SQLite-backed app DB.
-- Secure secret storage for API keys.
-- Real PDF parsing and chunking.
-- LanceDB/Chroma/Qdrant/SQLite-vss backend adapter.
-- Zotero local API integration.
-- Pandoc execution with validation.
-- Claim-to-evidence verification.
-- Template manager for journal-specific exports.
+- Secure API key storage.
+- Real AI provider calls using configured models.
+- Zotero local API and Better BibTeX sync.
+- PDF parsing, chunking, and vector search.
+- Pandoc-backed Word and LaTeX exporters.
+- File picker for workspace selection.
+- SQLite app registry.

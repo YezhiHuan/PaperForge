@@ -2,145 +2,157 @@
 
 ## Project Overview
 
-PaperForge is a local-first AI manuscript writing workspace.
+PaperForge is a local-first AI manuscript writing desktop app. It integrates local paper folders, Markdown sections, references, attachments, exports, Zotero / Better BibTeX workflows, and replaceable AI model settings.
 
-It organizes each paper as a folder-based project and connects Markdown drafts, Word drafts, LaTeX files, Zotero / Better BibTeX references, local PDFs, vector search, and LLM-assisted writing.
-
-PaperForge should not replace Word, LaTeX, or Zotero. It should act as an integration and writing-assistance layer.
+PaperForge is not a Word, LaTeX, or Zotero replacement. It is a writing-assistance and integration layer.
 
 ## Repository Scope
 
-This repository contains the PaperForge application source code.
+This repository contains PaperForge source code only.
 
-Generated paper projects are user data and should not be committed.
+Generated workspaces, paper projects, PDFs, API keys, model caches, vector indexes, and private manuscript data are user data and must not be committed.
 
-Do not commit local workspaces, PDFs, API keys, model caches, vector indexes, or private manuscript data.
+The source repository must ignore `workspace/` and `PaperForgeWorkspace/`.
 
-The source repository must ignore `workspace/`; generated paper projects live there by default.
+## Current Release Rules
 
-## Core Product Principles
+- Current product version is `1.0.0`.
+- App name is `PaperForge`.
+- App title must show `PaperForge v1.0.0`.
+- Every source change must update `CHANGELOG.md`.
+- User-facing feature changes must update `README.md`.
+- `npm run tauri dev` must remain runnable after changes.
+- Do not commit API keys.
+- Do not hard-code user paper content into source.
+- Do not default-create fixed manuscript sections.
+- `paperforge init` initializes only a global workspace and AI model config.
+- Single-paper directories are created only by New Paper in the app.
+- Git version control is only for PaperForge source, not generated paper projects.
 
-- One paper equals one local project folder.
-- Local-first by default.
-- Do not overwrite user manuscripts silently.
-- Keep Word and LaTeX citation workflows separate.
-- Word mode uses citation placeholders such as [CITE: Smith2023].
-- LaTeX mode may directly use \cite{Smith2023}.
-- Markdown / Pandoc mode may use [@Smith2023].
-- AI-generated claims must be traceable to literature evidence when evidence mode is enabled.
-- Prefer structured Markdown / section JSON as the internal draft representation.
-- Export to Word / LaTeX should be derived from the internal draft.
-- Generated paper projects should not contain Git logic in the MVP.
-- Empty manuscript is a valid project state.
-- Section templates are optional user choices.
-- Empty title, authors, and journal are valid project states.
-- Markdown package export is the primary stable export path.
+## Workspace Rules
 
-## Development Rules
-
-- Use TypeScript for frontend code.
-- Use clear domain models for Project, ManuscriptSection, ReferenceItem, CitationTask, LiteratureItem, LiteratureChunk, AIProposal, ClaimRecord, and ExportJob.
-- Keep business logic separated from UI components.
-- Do not hardcode user-specific paths.
-- Do not hardcode API keys.
-- Use file-system-safe project structures.
-- Avoid large monolithic components.
-- Prefer small modules under src/features/.
-- Every major feature should have a clear data model.
-- If implementing a mock, label it clearly as mock and keep the interface replaceable.
-- Do not hard-code default manuscript sections during project creation.
-- Section titles and section file paths must be persisted in paperforge.project.json.
-- Avoid renaming existing section files automatically unless the user explicitly requests that feature.
-- Use i18n keys for UI text where practical.
-- Word/LaTeX exporters should use staged export architecture, not fragile ad hoc hacks.
-- Settings select/toggle changes should apply immediately.
-- Do not reintroduce the bottom activity/export status strip unless explicitly requested.
-- Do not add dashboard-level export controls unless explicitly requested; prefer project-internal workspace saves and export panel actions.
-- Keep sidebar/dropdown contrast accessible in all themes.
-
-## Generated Paper Project Rules
-
-Generated paper projects are user data, not source code.
-
-PaperForge may create project folders such as:
+`paperforge init` creates a global workspace:
 
 ```text
-Paper_Project/
-├─ paperforge.project.json
-├─ project.json
-├─ manuscript/
-├─ references/
-├─ literature/
-├─ templates/
-├─ figures/
-├─ data/
-├─ ai/
-└─ outputs/
+PaperForgeWorkspace/
+├─ .paperforge/
+│  ├─ workspace.json
+│  ├─ ai-models.json
+│  ├─ settings.json
+│  └─ history.log
+└─ papers/
 ```
 
-Do not initialize Git inside these paper project folders in the MVP.
+It must not create `manuscript/`, `references/`, `attachments/`, or `exports/` for a paper.
 
-Manuscript sections are optional. If the user chooses an empty manuscript, create the manuscript/sections/ directory but no section files. Later section creation must update paperforge.project.json and logs/activity.json.
+`ai-models.json` may contain API keys and must stay out of Git.
+
+## Paper Project Rules
+
+New Paper creates one paper folder under `<workspaceRoot>/papers/`:
+
+```text
+papers/MyPaper/
+├─ paperforge.json
+├─ manuscript/
+│  └─ sections/
+├─ references/
+│  ├─ papers/
+│  ├─ bib/
+│  └─ notes/
+├─ attachments/
+│  ├─ figures/
+│  ├─ tables/
+│  ├─ raw-data/
+│  └─ supplementary/
+├─ exports/
+│  ├─ markdown/
+│  ├─ json/
+│  ├─ word/
+│  └─ latex/
+└─ .paperforge/
+   └─ history.log
+```
+
+Do not initialize Git inside paper folders in the MVP.
+
+Empty manuscript is valid. New paper creation must create `manuscript/sections/` but no section files unless user explicitly adds sections.
+
+Section titles and section file paths must be persisted in `paperforge.json`.
+
+Avoid renaming section files automatically unless user explicitly requests file rename support.
 
 ## Citation Rules
 
 Word mode:
-- Use [CITE: key] placeholders.
-- Do not attempt to generate Zotero Word fields.
-- Provide a citation task list so users can insert final references using the Zotero Word plugin.
+- Use `[CITE: key]` placeholders.
+- Do not generate Zotero Word fields.
+- Provide citation tasks so users can insert final references with Zotero Word plugin.
 
 LaTeX mode:
-- Use \cite{key}.
-- Use references.bib.
+- Use `\cite{key}`.
+- Use `references/bib/references.bib`.
 
 Markdown / Pandoc mode:
-- Use [@key] when appropriate.
+- Use `[@key]` when appropriate.
 
-## UI Guidelines
+## UI Rules
 
 The UI should feel like a research writing IDE:
 
-- Left panel: project explorer
+- Left panel: workspace and project explorer
 - Center panel: manuscript editor / preview
-- Right panel: AI assistant / citation tasks / literature search
+- Right panel: AI assistant / citation tasks / literature search / export / settings
 - Settings entry: sidebar footer
 
-The UI should feel fluid and alive:
-- Use subtle transitions for panel switching.
-- Use hover and active states for cards, buttons, tabs, and file tree items.
-- Use smooth expand/collapse animations for file trees and panels.
-- Use animated loading states for AI proposals, export jobs, and literature search.
-- Use gentle entrance animations for project cards and proposal cards.
-- Avoid excessive or distracting animations.
-- Prefer fast, subtle transitions around 120-220ms.
-- Respect reduced motion if supported.
+Keep sidebar/dropdown contrast accessible in all themes.
 
-Do not include Git controls for each paper project in the MVP UI.
+Settings select/toggle changes apply immediately.
+
+Do not reintroduce the bottom activity/export status strip unless explicitly requested.
+
+Do not add dashboard-level export controls unless explicitly requested; prefer project-internal export panel actions.
+
+Do not include per-paper Git controls in MVP UI.
+
+## Development Rules
+
+- Use TypeScript for frontend code.
+- Keep business logic separated from UI components.
+- Prefer small modules under `src/features/` for new major features.
+- Every major feature should have a clear data model.
+- If implementing a mock, label it clearly and keep the interface replaceable.
+- Word/LaTeX exporters should use staged export architecture, not fragile ad hoc hacks.
+- Do not hardcode user-specific paths.
+- Do not hardcode API keys.
+- Use file-system-safe project structures.
 
 ## Commands
 
-Use the package manager already configured in the repository.
+Use the package manager already configured in this repo.
 
-Expected commands:
-- install dependencies
-- run dev server
-- run typecheck
-- run lint if configured
-- run tests if configured
-- build app
+Expected checks:
 
-If a command is unavailable, document it in README.md instead of inventing fake success.
+```bash
+npm install
+npm run typecheck
+npm run build
+npm run tauri dev
+npm run tauri build
+```
 
-## Testing and Acceptance
+If a command is unavailable in the current environment, document that fact instead of claiming success.
 
-Before finishing a task:
-- Ensure the app starts.
-- Ensure TypeScript typecheck passes.
-- Ensure important UI routes render.
-- Ensure project creation works.
-- Ensure generated paper project folder structure is correct.
-- Ensure generated paper projects do not contain .git folders.
-- Ensure citation placeholder handling works for Word mode.
-- Ensure \cite{} generation works for LaTeX mode.
-- Ensure README.md is updated.
-- Ensure .gitignore excludes generated user data and local secrets.
+## Acceptance Before Finishing
+
+- App starts.
+- TypeScript typecheck passes.
+- Important UI routes render.
+- Workspace init works.
+- Project creation works.
+- Generated paper project structure is correct.
+- Generated paper projects contain no `.git`.
+- Word `[CITE: key]` handling works.
+- LaTeX `\cite{key}` generation works.
+- README and CHANGELOG are updated.
+- `.gitignore` excludes generated user data and local secrets.

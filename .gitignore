@@ -20,11 +20,13 @@ temp/
 # generated user workspaces
 workspace/
 workspaces/
+PaperForgeWorkspace/
 Paper_Project/
 paper_projects/
 user_projects/
 examples/generated/
 test-workspace/
+**/.paperforge/ai-models.json
 
 # user manuscript data
 *.docx

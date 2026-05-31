@@ -106,9 +106,9 @@ function App() {
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({
     manuscript: true,
     references: true,
-    literature: false,
-    ai: false,
-    outputs: false
+    attachments: false,
+    exports: false,
+    paperforge: false
   });
   const [bibtex, setBibtex] = useState("");
   const [aiInstruction, setAiInstruction] = useState("Rewrite selected paragraph");
@@ -233,6 +233,11 @@ function App() {
     link.click();
     URL.revokeObjectURL(url);
     addLog("success", `Exported project manifest: ${project.title}`);
+  }
+
+  async function initializeWorkspace() {
+    const workspace = await api.initWorkspace(settings.workspaceRoot);
+    addLog("success", `Workspace ready: ${settings.workspaceRoot}/${workspace.papersDir}`);
   }
 
   async function updateProjectMetadata(
@@ -387,6 +392,16 @@ function App() {
     }, 620);
   }
 
+  async function runProjectFolderExport() {
+    if (!activeProject) return;
+    setExportRunning(true);
+    setExportJob({ id: "running", projectId: activeProject.id, mode: "markdown", status: "running", outputPath: "", logs: ["Project folder export running"], createdAt: nowIso() });
+    const job = await api.exportProjectFolder(activeProject.id);
+    setExportJob(job);
+    setExportRunning(false);
+    addLog("success", `Project folder export: ${job.outputPath}`);
+  }
+
   async function openOutputFolder() {
     if (!exportJob?.outputPath) return;
     const opened = await api.openOutputFolder(outputFolderFromPath(exportJob.outputPath));
@@ -418,8 +433,10 @@ function App() {
           onOpen={selectProject}
           onNew={openCreateModal}
           onImport={() => setShowImportModal(true)}
+          onInitWorkspace={initializeWorkspace}
           onDelete={deleteProject}
           onEditTitle={editProjectTitle}
+          workspaceRoot={settings.workspaceRoot}
           t={tr}
           language={settings.language}
         />
@@ -542,6 +559,7 @@ function App() {
             exportRunning={exportRunning}
             exportWarnings={exportWarnings}
             runExport={runExport}
+            exportProjectFolder={runProjectFolderExport}
             exportManifest={() => exportProjectManifest(activeProject)}
             openOutputFolder={openOutputFolder}
             settings={draftSettings}
@@ -616,8 +634,10 @@ function Dashboard({
   onOpen,
   onNew,
   onImport,
+  onInitWorkspace,
   onDelete,
   onEditTitle,
+  workspaceRoot,
   t,
   language
 }: {
@@ -625,8 +645,10 @@ function Dashboard({
   onOpen: (project: ProjectConfig) => void;
   onNew: () => void;
   onImport: () => void;
+  onInitWorkspace: () => void;
   onDelete: (project: ProjectConfig) => void;
   onEditTitle: (project: ProjectConfig) => void;
+  workspaceRoot: string;
   t: Translate;
   language: Language;
 }) {
@@ -641,6 +663,10 @@ function Dashboard({
         <button className="secondary-btn large" onClick={onImport}>
           <FolderOpen size={18} /> {t("actions.importExisting")}
         </button>
+        <button className="secondary-btn large" onClick={onInitWorkspace}>
+          <Folder size={18} /> {t("actions.initWorkspace")}
+        </button>
+        <small className="workspace-path">{workspaceRoot}</small>
       </section>
       <motion.section className="project-grid" initial="hidden" animate="show">
         {projects.length === 0 && <div className="empty-state">{t("dashboard.empty")}</div>}
@@ -698,15 +724,13 @@ function Sidebar({
   t: Translate;
   language: Language;
 }) {
-  const folders = ["manuscript", "references", "literature", "figures", "data", "ai", "outputs"];
+  const folders = ["manuscript", "references", "attachments", "exports", "paperforge"];
   const folderLabels: Record<string, string> = {
     manuscript: t("project.manuscript"),
     references: t("project.references"),
-    literature: t("project.literature"),
-    figures: t("project.figures"),
-    data: t("project.data"),
-    ai: t("project.ai"),
-    outputs: t("project.outputs")
+    attachments: t("project.attachments"),
+    exports: t("project.outputs"),
+    paperforge: ".paperforge"
   };
   return (
     <aside className="sidebar">
@@ -799,6 +823,7 @@ function RightPanel(props: {
   exportWarnings: ExportValidationWarning[];
   runExport: (mode: ManuscriptMode) => void;
   exportManifest: () => void;
+  exportProjectFolder: () => void;
   openOutputFolder: () => void;
   settings: AppSettings;
   setSettings: (settings: AppSettings) => void;
@@ -1019,6 +1044,7 @@ function ExportTool(props: Parameters<typeof RightPanel>[0]) {
       <h2>{props.t("tools.export")}</h2>
       <div className="quick-grid">
         <button className="export-primary" onClick={() => props.runExport("markdown")}>{props.t("export.markdownPackage")}</button>
+        <button onClick={props.exportProjectFolder}>{props.t("export.projectFolder")}</button>
         <button onClick={() => props.runExport("word")} title={props.t("export.wordSoon")} disabled>{props.t("export.wordDraft")}</button>
         <button onClick={() => props.runExport("latex")} title={props.t("export.latexSoon")} disabled>{props.t("export.latexProject")}</button>
         <button onClick={props.exportManifest}>{props.t("export.manifestJson")}</button>

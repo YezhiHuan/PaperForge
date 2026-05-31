@@ -25,6 +25,8 @@ struct ProjectCreateInput {
 #[serde(rename_all = "camelCase")]
 struct ProjectConfig {
     id: String,
+    #[serde(default = "default_project_version")]
+    version: String,
     #[serde(default = "default_project_title")]
     title: String,
     #[serde(default)]
@@ -33,6 +35,10 @@ struct ProjectConfig {
     authors: Vec<String>,
     #[serde(default = "default_target_journal")]
     target_journal: String,
+    #[serde(default)]
+    journal: String,
+    #[serde(default = "default_language")]
+    language: Language,
     #[serde(default = "default_citation_style")]
     citation_style: String,
     #[serde(default = "default_export_mode")]
@@ -44,6 +50,8 @@ struct ProjectConfig {
     citation_backend: CitationBackend,
     #[serde(default = "default_manuscript_manifest")]
     manuscript: ManuscriptManifest,
+    #[serde(default)]
+    sections: Vec<ManuscriptManifestSection>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -86,6 +94,10 @@ fn default_manuscript_manifest() -> ManuscriptManifest {
 
 fn default_project_title() -> String {
     "Untitled Paper".to_string()
+}
+
+fn default_project_version() -> String {
+    "1.0.0".to_string()
 }
 
 fn default_target_journal() -> String {
@@ -382,6 +394,24 @@ struct AppSettings {
     language: Language,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceConfig {
+    version: String,
+    workspace_name: String,
+    created_at: String,
+    updated_at: String,
+    papers_dir: String,
+    default_language: Language,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiModelConfig {
+    default_model_id: String,
+    models: Vec<serde_json::Value>,
+}
+
 fn now_iso() -> String {
     Utc::now().to_rfc3339()
 }
@@ -433,7 +463,7 @@ fn citation_backend(mode: &ManuscriptMode) -> CitationBackend {
 
 fn default_settings() -> AppSettings {
     AppSettings {
-        workspace_root: "workspace".to_string(),
+        workspace_root: "PaperForgeWorkspace".to_string(),
         default_manuscript_mode: ManuscriptMode::Word,
         llm_provider: LlmProviderSettings {
             base_url: "https://api.openai.com/v1".to_string(),
@@ -445,6 +475,74 @@ fn default_settings() -> AppSettings {
         theme_mode: ThemeMode::Dark,
         language: Language::En,
     }
+}
+
+fn default_workspace_config(existing: Option<WorkspaceConfig>) -> WorkspaceConfig {
+    let timestamp = now_iso();
+    WorkspaceConfig {
+        version: "1.0.0".to_string(),
+        workspace_name: existing
+            .as_ref()
+            .map(|value| value.workspace_name.clone())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "PaperForge Workspace".to_string()),
+        created_at: existing
+            .as_ref()
+            .map(|value| value.created_at.clone())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| timestamp.clone()),
+        updated_at: timestamp,
+        papers_dir: "papers".to_string(),
+        default_language: existing
+            .as_ref()
+            .map(|value| value.default_language.clone())
+            .unwrap_or(Language::En),
+    }
+}
+
+fn ensure_workspace(root: &Path) -> Result<WorkspaceConfig, String> {
+    fs::create_dir_all(workspace_meta_dir(root)).map_err(|err| err.to_string())?;
+    fs::create_dir_all(root.join("papers")).map_err(|err| err.to_string())?;
+    let existing = if workspace_config_path(root).exists() {
+        let raw = fs::read_to_string(workspace_config_path(root)).map_err(|err| err.to_string())?;
+        serde_json::from_str::<WorkspaceConfig>(&raw).ok()
+    } else {
+        None
+    };
+    let config = default_workspace_config(existing);
+    write_json(&workspace_config_path(root), &config)?;
+    if !workspace_ai_models_path(root).exists() {
+        write_json(
+            &workspace_ai_models_path(root),
+            &AiModelConfig {
+                default_model_id: String::new(),
+                models: vec![],
+            },
+        )?;
+    }
+    if !workspace_settings_path(root).exists() {
+        let settings = serde_json::json!({
+            "language": "en",
+            "theme": "system"
+        });
+        write_json(&workspace_settings_path(root), &settings)?;
+    }
+    write_if_missing(&workspace_history_path(root), b"")?;
+    Ok(config)
+}
+
+#[tauri::command]
+fn init_workspace(root_path: String) -> Result<WorkspaceConfig, String> {
+    let root = PathBuf::from(if root_path.trim().is_empty() {
+        "PaperForgeWorkspace".to_string()
+    } else {
+        root_path.trim().to_string()
+    });
+    let config = ensure_workspace(&root)?;
+    let mut settings = read_settings().unwrap_or_else(|_| default_settings());
+    settings.workspace_root = root.to_string_lossy().to_string();
+    save_settings(settings)?;
+    Ok(config)
 }
 
 fn read_registry() -> Result<Vec<ProjectConfig>, String> {
@@ -473,6 +571,9 @@ fn project_by_id(project_id: &str) -> Result<ProjectConfig, String> {
 }
 
 fn normalize_project(mut project: ProjectConfig) -> ProjectConfig {
+    if project.version.trim().is_empty() {
+        project.version = default_project_version();
+    }
     if project.title.trim().is_empty() {
         project.title = default_project_title();
     } else {
@@ -492,13 +593,31 @@ fn normalize_project(mut project: ProjectConfig) -> ProjectConfig {
     } else {
         project.target_journal = project.target_journal.trim().to_string();
     }
+    project.journal = if project.target_journal == default_target_journal() {
+        String::new()
+    } else {
+        project.target_journal.clone()
+    };
     if project.citation_style.trim().is_empty() {
         project.citation_style = default_citation_style();
     }
+    project.sections = project.manuscript.sections.clone();
     project
 }
 
+fn activity_path(root: &Path) -> PathBuf {
+    root.join(".paperforge/activity.json")
+}
+
+fn paper_history_path(root: &Path) -> PathBuf {
+    root.join(".paperforge/history.log")
+}
+
 fn project_manifest_path(root: &Path) -> PathBuf {
+    root.join("paperforge.json")
+}
+
+fn compatibility_project_manifest_path(root: &Path) -> PathBuf {
     root.join("paperforge.project.json")
 }
 
@@ -506,8 +625,24 @@ fn legacy_project_manifest_path(root: &Path) -> PathBuf {
     root.join("project.json")
 }
 
-fn activity_path(root: &Path) -> PathBuf {
-    root.join("logs/activity.json")
+fn workspace_meta_dir(root: &Path) -> PathBuf {
+    root.join(".paperforge")
+}
+
+fn workspace_config_path(root: &Path) -> PathBuf {
+    workspace_meta_dir(root).join("workspace.json")
+}
+
+fn workspace_ai_models_path(root: &Path) -> PathBuf {
+    workspace_meta_dir(root).join("ai-models.json")
+}
+
+fn workspace_settings_path(root: &Path) -> PathBuf {
+    workspace_meta_dir(root).join("settings.json")
+}
+
+fn workspace_history_path(root: &Path) -> PathBuf {
+    workspace_meta_dir(root).join("history.log")
 }
 
 fn slugify_title(title: &str) -> String {
@@ -681,38 +816,33 @@ fn ensure_structure(project: &ProjectConfig) -> Result<(), String> {
     let root = PathBuf::from(&project.root_path);
     let folders = [
         "manuscript/sections",
-        "references/csl",
-        "literature/pdfs",
-        "literature/notes",
-        "literature/embeddings",
-        "templates/latex_template",
-        "figures/raw",
-        "figures/processed",
-        "data/raw",
-        "data/processed",
-        "ai/prompts",
-        "ai/writing_logs",
-        "outputs",
+        "references/papers",
+        "references/bib",
+        "references/notes",
+        "attachments/figures",
+        "attachments/tables",
+        "attachments/raw-data",
+        "attachments/supplementary",
+        "exports/markdown",
+        "exports/json",
+        "exports/word",
+        "exports/latex",
+        ".paperforge",
     ];
     for folder in folders {
         fs::create_dir_all(root.join(folder)).map_err(|err| err.to_string())?;
     }
-    fs::create_dir_all(root.join("logs")).map_err(|err| err.to_string())?;
     let raw_project = serde_json::to_string_pretty(project).map_err(|err| err.to_string())?;
     fs::write(project_manifest_path(&root), raw_project.as_bytes())
         .map_err(|err| err.to_string())?;
-    fs::write(legacy_project_manifest_path(&root), raw_project.as_bytes())
+    fs::write(compatibility_project_manifest_path(&root), raw_project.as_bytes())
         .map_err(|err| err.to_string())?;
-    write_if_missing(&root.join("manuscript/paper.docx"), &[])?;
-    write_if_missing(
-        &root.join("manuscript/main.tex"),
-        basic_latex_template().as_bytes(),
-    )?;
-    write_if_missing(&root.join("references/references.bib"), b"")?;
-    write_if_missing(&root.join("templates/word_template.docx"), &[])?;
-    write_if_missing(&root.join("ai/claims.json"), b"[]")?;
-    write_if_missing(&root.join("literature/literature.json"), b"[]")?;
+    write_if_missing(&root.join("references/bib/references.bib"), b"")?;
+    write_if_missing(&root.join("references/papers/papers.json"), b"[]")?;
+    write_if_missing(&root.join("references/citation_tasks.json"), b"[]")?;
+    write_if_missing(&root.join(".paperforge/claims.json"), b"[]")?;
     write_if_missing(&activity_path(&root), b"[]")?;
+    write_if_missing(&paper_history_path(&root), b"")?;
     for manifest in &project.manuscript.sections {
         let path = root.join(&manifest.path);
         let content = format!("## {}\n\n", manifest.title);
@@ -726,10 +856,6 @@ fn write_if_missing(path: &Path, bytes: &[u8]) -> Result<(), String> {
         return Ok(());
     }
     fs::write(path, bytes).map_err(|err| err.to_string())
-}
-
-fn basic_latex_template() -> &'static str {
-    "\\documentclass{article}\n\\usepackage[utf8]{inputenc}\n\\begin{document}\n\n% PaperForge generated draft.\n\n\\bibliographystyle{plain}\n\\bibliography{references}\n\\end{document}\n"
 }
 
 fn read_json_vec<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Vec<T>, String> {
@@ -770,9 +896,10 @@ fn append_project_activity(
     section_id: Option<String>,
 ) -> Result<Vec<ProjectActivity>, String> {
     let root = PathBuf::from(&project.root_path);
-    fs::create_dir_all(root.join("logs")).map_err(|err| err.to_string())?;
+    fs::create_dir_all(root.join(".paperforge")).map_err(|err| err.to_string())?;
     let path = activity_path(&root);
     let mut activities: Vec<ProjectActivity> = read_json_vec(&path)?;
+    let line = format!("{} {}\n", now_iso(), message);
     activities.insert(
         0,
         ProjectActivity {
@@ -784,6 +911,15 @@ fn append_project_activity(
         },
     );
     write_json(&path, &activities)?;
+    use std::io::Write;
+    let mut history = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(paper_history_path(&root))
+        .map_err(|err| err.to_string())?;
+    history
+        .write_all(line.as_bytes())
+        .map_err(|err| err.to_string())?;
     Ok(activities)
 }
 
@@ -834,16 +970,24 @@ fn create_project(input: ProjectCreateInput) -> Result<ProjectConfig, String> {
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(settings.workspace_root);
     let workspace_path = PathBuf::from(workspace_root);
-    let root_path = workspace_path.join(safe_folder_name(&title));
+    ensure_workspace(&workspace_path)?;
+    let root_path = workspace_path.join("papers").join(safe_folder_name(&title));
     let timestamp = now_iso();
     let citation_backend = citation_backend(&input.manuscript_mode);
     let sections = create_initial_sections(&input.section_names, &input.section_naming);
     let project = ProjectConfig {
         id: format!("project_{}", Uuid::new_v4()),
+        version: default_project_version(),
         title,
         author,
         authors,
-        target_journal,
+        target_journal: target_journal.clone(),
+        journal: if target_journal == default_target_journal() {
+            String::new()
+        } else {
+            target_journal.clone()
+        },
+        language: Language::En,
         citation_style: input
             .citation_style
             .clone()
@@ -859,6 +1003,7 @@ fn create_project(input: ProjectCreateInput) -> Result<ProjectConfig, String> {
             section_naming: input.section_naming,
             sections: sections.iter().map(manifest_from_section).collect(),
         },
+        sections: sections.iter().map(manifest_from_section).collect(),
     };
     ensure_structure(&project)?;
     let mut projects = read_registry()?;
@@ -876,6 +1021,8 @@ fn import_project_folder(root_path: String) -> Result<ProjectConfig, String> {
     fs::create_dir_all(&root).map_err(|err| err.to_string())?;
     let project_json = if project_manifest_path(&root).exists() {
         project_manifest_path(&root)
+    } else if compatibility_project_manifest_path(&root).exists() {
+        compatibility_project_manifest_path(&root)
     } else {
         legacy_project_manifest_path(&root)
     };
@@ -891,10 +1038,13 @@ fn import_project_folder(root_path: String) -> Result<ProjectConfig, String> {
         let timestamp = now_iso();
         ProjectConfig {
             id: format!("project_{}", Uuid::new_v4()),
+            version: default_project_version(),
             title,
             author: String::new(),
             authors: vec![],
             target_journal: default_target_journal(),
+            journal: String::new(),
+            language: Language::En,
             citation_style: default_citation_style(),
             export_mode: ManuscriptMode::Markdown,
             manuscript_mode: ManuscriptMode::Word,
@@ -903,6 +1053,7 @@ fn import_project_folder(root_path: String) -> Result<ProjectConfig, String> {
             updated_at: timestamp,
             citation_backend: CitationBackend::ZoteroWordPlugin,
             manuscript: default_manuscript_manifest(),
+            sections: vec![],
         }
     };
     project = normalize_project(project);
@@ -950,7 +1101,7 @@ fn update_project_config(project: ProjectConfig) -> Result<ProjectConfig, String
     write_registry(&projects)?;
     let root = PathBuf::from(&project.root_path);
     write_json(&project_manifest_path(&root), &project)?;
-    write_json(&legacy_project_manifest_path(&root), &project)?;
+    write_json(&compatibility_project_manifest_path(&root), &project)?;
     Ok(project)
 }
 
@@ -995,6 +1146,11 @@ fn update_project_metadata(
             default_target_journal()
         } else {
             target_journal.trim().to_string()
+        };
+        project.journal = if project.target_journal == default_target_journal() {
+            String::new()
+        } else {
+            project.target_journal.clone()
         };
     }
     if let Some(mode) = partial.manuscript_mode {
@@ -1046,19 +1202,9 @@ fn delete_project(project_id: String, delete_files: bool) -> Result<bool, String
 fn export_project_manifest(project_id: String) -> Result<String, String> {
     let project = project_by_id(&project_id)?;
     let root = PathBuf::from(&project.root_path);
-    let manifest = serde_json::json!({
-        "exportedAt": now_iso(),
-        "project": project,
-        "sections": list_sections(project_id.clone())?,
-        "references": list_references(project_id.clone())?,
-        "citationTasks": scan_citation_tasks(project_id.clone())?,
-        "literature": list_literature(project_id.clone())?,
-        "claims": list_claims(project_id.clone())?,
-        "note": "PaperForge MVP manifest export. User manuscripts stay local."
-    });
-    let raw = serde_json::to_string_pretty(&manifest).map_err(|err| err.to_string())?;
-    fs::create_dir_all(root.join("outputs")).map_err(|err| err.to_string())?;
-    fs::write(root.join("outputs/project_manifest.json"), &raw).map_err(|err| err.to_string())?;
+    let raw = serde_json::to_string_pretty(&project).map_err(|err| err.to_string())?;
+    fs::create_dir_all(root.join("exports/json")).map_err(|err| err.to_string())?;
+    fs::write(root.join("exports/json/paperforge.json"), &raw).map_err(|err| err.to_string())?;
     Ok(raw)
 }
 
@@ -1207,11 +1353,9 @@ fn list_project_tree(_project_id: String) -> Result<Vec<String>, String> {
     Ok(vec![
         "manuscript".to_string(),
         "references".to_string(),
-        "literature".to_string(),
-        "figures".to_string(),
-        "data".to_string(),
-        "ai".to_string(),
-        "outputs".to_string(),
+        "attachments".to_string(),
+        "exports".to_string(),
+        ".paperforge".to_string(),
     ])
 }
 
@@ -1294,13 +1438,13 @@ fn parse_bibtex(bibtex: String) -> Result<Vec<ReferenceItem>, String> {
 fn save_bibtex(project_id: String, bibtex: String) -> Result<Vec<ReferenceItem>, String> {
     let project = project_by_id(&project_id)?;
     fs::write(
-        PathBuf::from(&project.root_path).join("references/references.bib"),
+        PathBuf::from(&project.root_path).join("references/bib/references.bib"),
         &bibtex,
     )
     .map_err(|err| err.to_string())?;
     let refs = parse_bibtex(bibtex)?;
     write_json(
-        &PathBuf::from(&project.root_path).join("references/references.json"),
+        &PathBuf::from(&project.root_path).join("references/bib/references.json"),
         &refs,
     )?;
     Ok(refs)
@@ -1309,11 +1453,11 @@ fn save_bibtex(project_id: String, bibtex: String) -> Result<Vec<ReferenceItem>,
 #[tauri::command]
 fn list_references(project_id: String) -> Result<Vec<ReferenceItem>, String> {
     let project = project_by_id(&project_id)?;
-    let refs_path = PathBuf::from(&project.root_path).join("references/references.json");
+    let refs_path = PathBuf::from(&project.root_path).join("references/bib/references.json");
     if refs_path.exists() {
         return read_json_vec(&refs_path);
     }
-    let bib_path = PathBuf::from(&project.root_path).join("references/references.bib");
+    let bib_path = PathBuf::from(&project.root_path).join("references/bib/references.bib");
     let bibtex = fs::read_to_string(bib_path).unwrap_or_default();
     parse_bibtex(bibtex)
 }
@@ -1376,7 +1520,7 @@ fn add_literature_item(
     item: LiteratureItemInput,
 ) -> Result<LiteratureItem, String> {
     let project = project_by_id(&project_id)?;
-    let path = PathBuf::from(&project.root_path).join("literature/literature.json");
+    let path = PathBuf::from(&project.root_path).join("references/papers/papers.json");
     let mut items: Vec<LiteratureItem> = read_json_vec(&path)?;
     let item = LiteratureItem {
         id: format!("lit_{}", Uuid::new_v4()),
@@ -1395,7 +1539,7 @@ fn add_literature_item(
 #[tauri::command]
 fn list_literature(project_id: String) -> Result<Vec<LiteratureItem>, String> {
     let project = project_by_id(&project_id)?;
-    read_json_vec(&PathBuf::from(&project.root_path).join("literature/literature.json"))
+    read_json_vec(&PathBuf::from(&project.root_path).join("references/papers/papers.json"))
 }
 
 #[tauri::command]
@@ -1426,14 +1570,14 @@ fn search_literature_mock(
 #[tauri::command]
 fn list_claims(project_id: String) -> Result<Vec<ClaimRecord>, String> {
     let project = project_by_id(&project_id)?;
-    read_json_vec(&PathBuf::from(&project.root_path).join("ai/claims.json"))
+    read_json_vec(&PathBuf::from(&project.root_path).join(".paperforge/claims.json"))
 }
 
 #[tauri::command]
 fn save_claims(project_id: String, claims: Vec<ClaimRecord>) -> Result<Vec<ClaimRecord>, String> {
     let project = project_by_id(&project_id)?;
     write_json(
-        &PathBuf::from(&project.root_path).join("ai/claims.json"),
+        &PathBuf::from(&project.root_path).join(".paperforge/claims.json"),
         &claims,
     )?;
     Ok(claims)
@@ -1583,6 +1727,41 @@ fn copy_dir_recursive(
     Ok(())
 }
 
+fn copy_project_snapshot_recursive(
+    src: &Path,
+    dst: &Path,
+    files: &mut Vec<String>,
+    prefix: &str,
+) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|err| err.to_string())?;
+    for entry in fs::read_dir(src).map_err(|err| err.to_string())? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let name = entry.file_name();
+        let name_string = name.to_string_lossy();
+        if name_string == ".git" || name_string == "project-folder" {
+            continue;
+        }
+        let src_path = entry.path();
+        let dst_path = dst.join(&name);
+        let rel = if prefix.is_empty() {
+            name_string.to_string()
+        } else {
+            format!("{}/{}", prefix, name_string)
+        }
+        .replace('\\', "/");
+        if src_path.is_dir() {
+            copy_project_snapshot_recursive(&src_path, &dst_path, files, &rel)?;
+        } else {
+            if let Some(parent) = dst_path.parent() {
+                fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+            }
+            fs::copy(&src_path, &dst_path).map_err(|err| err.to_string())?;
+            files.push(rel);
+        }
+    }
+    Ok(())
+}
+
 fn copy_optional_file(
     src: &Path,
     dst: &Path,
@@ -1634,7 +1813,7 @@ fn export_markdown_package(project_id: String) -> Result<ExportJob, String> {
     let root = PathBuf::from(&project.root_path);
     let stamp = Utc::now().format("%Y%m%d-%H%M%S").to_string();
     let output = root
-        .join("outputs")
+        .join("exports/markdown")
         .join(format!("paperforge-export-{}", stamp));
     fs::create_dir_all(&output).map_err(|err| err.to_string())?;
 
@@ -1647,8 +1826,8 @@ fn export_markdown_package(project_id: String) -> Result<ExportJob, String> {
 
     let (body, body_warnings) = markdown_package_body(&project_id)?;
     warnings.extend(body_warnings);
-    fs::write(output.join("manuscript.md"), body).map_err(|err| err.to_string())?;
-    files.push("manuscript.md".to_string());
+    fs::write(output.join("paper.md"), body).map_err(|err| err.to_string())?;
+    files.push("paper.md".to_string());
 
     fs::create_dir_all(output.join("sections")).map_err(|err| err.to_string())?;
     let mut sections = list_sections(project_id.clone())?;
@@ -1661,24 +1840,24 @@ fn export_markdown_package(project_id: String) -> Result<ExportJob, String> {
     }
 
     let bib_src = {
-        let library = root.join("references/library.bib");
+        let library = root.join("references/bib/library.bib");
         if library.exists() {
             library
         } else {
-            root.join("references/references.bib")
+            root.join("references/bib/references.bib")
         }
     };
     copy_optional_file(
         &bib_src,
-        &output.join("references/library.bib"),
-        "references/library.bib",
+        &output.join("references/bib/library.bib"),
+        "references/bib/library.bib",
         &mut files,
         &mut skipped,
     )?;
     copy_optional_file(
-        &root.join("references/references.json"),
-        &output.join("references/references.json"),
-        "references/references.json",
+        &root.join("references/bib/references.json"),
+        &output.join("references/bib/references.json"),
+        "references/bib/references.json",
         &mut files,
         &mut skipped,
     )?;
@@ -1690,29 +1869,28 @@ fn export_markdown_package(project_id: String) -> Result<ExportJob, String> {
         &mut skipped,
     )?;
     let papers_src = {
-        let papers = root.join("literature/papers.json");
+        let papers = root.join("references/papers/papers.json");
         if papers.exists() {
             papers
         } else {
-            root.join("literature/literature.json")
+            root.join("references/papers/papers.json")
         }
     };
     copy_optional_file(
         &papers_src,
-        &output.join("literature/papers.json"),
-        "literature/papers.json",
+        &output.join("references/papers/papers.json"),
+        "references/papers/papers.json",
         &mut files,
         &mut skipped,
     )?;
     copy_dir_recursive(
-        &root.join("figures"),
-        &output.join("figures"),
+        &root.join("attachments"),
+        &output.join("attachments"),
         &mut files,
-        "figures",
+        "attachments",
     )?;
-    copy_dir_recursive(&root.join("data"), &output.join("data"), &mut files, "data")?;
     copy_optional_file(
-        &root.join("ai/claims.json"),
+        &root.join(".paperforge/claims.json"),
         &output.join("claims/claims.json"),
         "claims/claims.json",
         &mut files,
@@ -1738,8 +1916,39 @@ fn export_markdown_package(project_id: String) -> Result<ExportJob, String> {
         output_path: output.to_string_lossy().to_string(),
         logs: vec![
             "Markdown package exported.".to_string(),
-            "Includes manifest.json, manuscript.md, sections/, export-report.json.".to_string(),
+            "Includes manifest.json, paper.md, sections/, references/, attachments/, export-report.json.".to_string(),
         ],
+        created_at: now_iso(),
+    })
+}
+
+#[tauri::command]
+fn export_project_folder(project_id: String) -> Result<ExportJob, String> {
+    let project = normalize_project(project_by_id(&project_id)?);
+    let root = PathBuf::from(&project.root_path);
+    let stamp = Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    let output = root
+        .join("exports/project-folder")
+        .join(format!("{}-{}", safe_folder_name(&project.title), stamp));
+    let mut files = vec![];
+    copy_project_snapshot_recursive(&root, &output, &mut files, "")?;
+    write_json(
+        &output.join("export-report.json"),
+        &serde_json::json!({
+            "exportedAt": now_iso(),
+            "projectTitle": project.title,
+            "mode": "project-folder",
+            "outputDir": output.to_string_lossy(),
+            "files": files,
+        }),
+    )?;
+    Ok(ExportJob {
+        id: format!("export_{}", Uuid::new_v4()),
+        project_id,
+        mode: ManuscriptMode::Markdown,
+        status: ExportStatus::Success,
+        output_path: output.to_string_lossy().to_string(),
+        logs: vec!["Project folder snapshot exported.".to_string()],
         created_at: now_iso(),
     })
 }
@@ -1774,14 +1983,14 @@ fn export_latex_placeholder(project_id: String) -> Result<ExportJob, String> {
 fn export_word_draft(project_id: String) -> Result<ExportJob, String> {
     let project = project_by_id(&project_id)?;
     let root = PathBuf::from(&project.root_path);
-    let output = root.join("outputs/combined_word_draft.md");
+    let output = root.join("exports/word/combined_word_draft.md");
     fs::write(
         &output,
         convert_citations_for_mode(&merged_sections(&project_id)?, &ManuscriptMode::Word)?,
     )
     .map_err(|err| err.to_string())?;
     let tasks = scan_citation_tasks(project_id.clone())?;
-    write_json(&root.join("outputs/citation_tasks.json"), &tasks)?;
+    write_json(&root.join("exports/word/citation_tasks.json"), &tasks)?;
     Ok(ExportJob {
         id: format!("export_{}", Uuid::new_v4()),
         project_id,
@@ -1801,12 +2010,12 @@ fn export_word_draft(project_id: String) -> Result<ExportJob, String> {
 fn export_latex(project_id: String) -> Result<ExportJob, String> {
     let project = project_by_id(&project_id)?;
     let root = PathBuf::from(&project.root_path);
-    let output = root.join("outputs/main.tex");
+    let output = root.join("exports/latex/main.tex");
     let body = convert_citations_for_mode(&merged_sections(&project_id)?, &ManuscriptMode::Latex)?;
     let tex = format!("\\documentclass{{article}}\n\\usepackage[utf8]{{inputenc}}\n\\begin{{document}}\n\n{}\n\n\\bibliographystyle{{plain}}\n\\bibliography{{references}}\n\\end{{document}}\n", body);
     fs::write(&output, tex).map_err(|err| err.to_string())?;
-    let bib_src = root.join("references/references.bib");
-    let bib_dst = root.join("outputs/references.bib");
+    let bib_src = root.join("references/bib/references.bib");
+    let bib_dst = root.join("exports/latex/references.bib");
     if bib_src.exists() {
         fs::copy(bib_src, bib_dst).map_err(|err| err.to_string())?;
     }
@@ -1828,14 +2037,14 @@ fn export_latex(project_id: String) -> Result<ExportJob, String> {
 fn export_markdown_pandoc(project_id: String) -> Result<ExportJob, String> {
     let project = project_by_id(&project_id)?;
     let root = PathBuf::from(&project.root_path);
-    let output = root.join("outputs/combined.md");
+    let output = root.join("exports/markdown/combined.md");
     fs::write(
         &output,
         convert_citations_for_mode(&merged_sections(&project_id)?, &ManuscriptMode::Markdown)?,
     )
     .map_err(|err| err.to_string())?;
-    let command = "pandoc combined.md --bibliography ../references/references.bib --csl ../references/csl/style.csl -o paper.docx";
-    fs::write(root.join("outputs/pandoc_command.txt"), command).map_err(|err| err.to_string())?;
+    let command = "pandoc combined.md --bibliography ../references/bib/references.bib -o paper.docx";
+    fs::write(root.join("exports/markdown/pandoc_command.txt"), command).map_err(|err| err.to_string())?;
     Ok(ExportJob {
         id: format!("export_{}", Uuid::new_v4()),
         project_id,
@@ -1914,8 +2123,10 @@ pub fn run() {
             export_latex,
             export_markdown_pandoc,
             export_markdown_package,
+            export_project_folder,
             export_word_draft_placeholder,
             export_latex_placeholder,
+            init_workspace,
             read_settings,
             save_settings,
             generate_ai_proposal,
@@ -1983,12 +2194,13 @@ mod tests {
             ))
             .expect("project");
             let root = PathBuf::from(&project.root_path);
+            assert!(root.ends_with("workspace/papers/Empty_Paper"));
             assert!(root.join("manuscript/sections").exists());
             assert!(list_sections(project.id.clone())
                 .expect("sections")
                 .is_empty());
             let manifest: ProjectConfig = serde_json::from_str(
-                &fs::read_to_string(root.join("paperforge.project.json")).expect("manifest raw"),
+                &fs::read_to_string(root.join("paperforge.json")).expect("manifest raw"),
             )
             .expect("manifest json");
             assert!(manifest.manuscript.sections.is_empty());
@@ -2013,7 +2225,7 @@ mod tests {
                 vec!["01_abstract.md", "02_introduction.md", "03_methods.md",]
             );
             assert!(PathBuf::from(&project.root_path)
-                .join("paperforge.project.json")
+                .join("paperforge.json")
                 .exists());
         });
     }
@@ -2063,7 +2275,7 @@ mod tests {
             assert_eq!(renamed.title, "Renamed Section");
             let root = PathBuf::from(project_by_id(&project.id).expect("project").root_path);
             let manifest: ProjectConfig = serde_json::from_str(
-                &fs::read_to_string(root.join("paperforge.project.json")).expect("manifest raw"),
+                &fs::read_to_string(root.join("paperforge.json")).expect("manifest raw"),
             )
             .expect("manifest json");
             assert_eq!(manifest.manuscript.sections[0].title, "Renamed Section");
@@ -2072,7 +2284,7 @@ mod tests {
                 "manuscript/sections/01_section.md"
             );
             let activities: Vec<ProjectActivity> = serde_json::from_str(
-                &fs::read_to_string(root.join("logs/activity.json")).expect("activity raw"),
+                &fs::read_to_string(root.join(".paperforge/activity.json")).expect("activity raw"),
             )
             .expect("activity json");
             assert!(activities
@@ -2097,7 +2309,7 @@ mod tests {
             assert!(matches!(project.export_mode, ManuscriptMode::Markdown));
             let root = PathBuf::from(&project.root_path);
             let manifest: ProjectConfig = serde_json::from_str(
-                &fs::read_to_string(root.join("paperforge.project.json")).expect("manifest raw"),
+                &fs::read_to_string(root.join("paperforge.json")).expect("manifest raw"),
             )
             .expect("manifest json");
             assert_eq!(manifest.title, "Untitled Paper");
@@ -2115,7 +2327,7 @@ mod tests {
             ))
             .expect("project");
             fs::write(
-                PathBuf::from(&project.root_path).join("references/references.bib"),
+                PathBuf::from(&project.root_path).join("references/bib/references.bib"),
                 "@article{Zhang2023,title={Test}}",
             )
             .expect("bib");
@@ -2123,12 +2335,12 @@ mod tests {
             assert!(matches!(job.status, ExportStatus::Success));
             let output = PathBuf::from(job.output_path);
             assert!(output.join("manifest.json").exists());
-            assert!(output.join("manuscript.md").exists());
+            assert!(output.join("paper.md").exists());
             assert!(output.join("sections/01_introduction.md").exists());
             assert!(output.join("sections/02_methods.md").exists());
-            assert!(output.join("references/library.bib").exists());
+            assert!(output.join("references/bib/library.bib").exists());
             let report_raw = fs::read_to_string(output.join("export-report.json")).expect("report");
-            assert!(report_raw.contains("manuscript.md"));
+            assert!(report_raw.contains("paper.md"));
             assert!(!output.join(".git").exists());
         });
     }
@@ -2155,7 +2367,7 @@ mod tests {
                 "# Draft\n\nSaved body."
             );
             assert!(PathBuf::from(&project.root_path)
-                .join("paperforge.project.json")
+                .join("paperforge.json")
                 .exists());
         });
     }

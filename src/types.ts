@@ -31,10 +31,13 @@ export interface ManuscriptManifest {
 
 export interface ProjectConfig {
   id: string;
+  version: string;
   title: string;
   author: string;
   authors: string[];
   targetJournal: string;
+  journal?: string;
+  language: Language;
   citationStyle: string;
   exportMode: ManuscriptMode;
   manuscriptMode: ManuscriptMode;
@@ -43,6 +46,7 @@ export interface ProjectConfig {
   updatedAt: string;
   citationBackend: CitationBackend;
   manuscript: ManuscriptManifest;
+  sections: ManuscriptManifestSection[];
 }
 
 export interface ProjectCreateInput {
@@ -179,6 +183,15 @@ export interface AppSettings {
   defaultExportMode: ManuscriptMode;
   themeMode: ThemeMode;
   language: Language;
+}
+
+export interface WorkspaceConfig {
+  version: string;
+  workspaceName: string;
+  createdAt: string;
+  updatedAt: string;
+  papersDir: string;
+  defaultLanguage: Language;
 }
 
 export interface FileTreeNode {

@@ -442,6 +442,13 @@ pre { white-space: pre-wrap; background: var(--bg); border: 1px solid var(--line
   padding: 8px 10px;
 }
 .status-card.activity { min-width: 0; }
+
+.workspace-path {
+  display: block;
+  color: var(--muted);
+  margin-top: 8px;
+  word-break: break-all;
+}
 .log-strip {
   grid-column: 1 / 4;
   display: flex !important;

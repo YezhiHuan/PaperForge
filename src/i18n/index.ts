@@ -22,7 +22,8 @@ export const messages = {
       createSection: "Create section",
       addCustomSection: "Add custom section",
       openOutputFolder: "Open output folder",
-      updateTitle: "Update title"
+      updateTitle: "Update title",
+      initWorkspace: "Initialize workspace"
     },
     dashboard: {
       headline: "Write papers from local folders, citations, evidence, and AI proposals.",
@@ -35,6 +36,7 @@ export const messages = {
       figures: "Figures",
       data: "Data",
       ai: "AI",
+      attachments: "Attachments",
       outputs: "Outputs",
       settings: "Settings",
       projectInfo: "Project Info",
@@ -70,6 +72,7 @@ export const messages = {
     export: {
       markdownPackage: "Export Markdown Package",
       manifestJson: "Export Manifest JSON",
+      projectFolder: "Export Project Folder",
       wordDraft: "Export Word Draft",
       latexProject: "Export LaTeX Project",
       wordSoon: "Coming soon. Recommended route: Markdown/Pandoc to DOCX.",
@@ -113,7 +116,8 @@ export const messages = {
       createSection: "新建章节",
       addCustomSection: "添加自定义章节",
       openOutputFolder: "打开导出文件夹",
-      updateTitle: "更新标题"
+      updateTitle: "更新标题",
+      initWorkspace: "初始化工作区"
     },
     dashboard: {
       headline: "从本地文件夹、引用、证据和 AI 建议开始写论文。",
@@ -126,6 +130,7 @@ export const messages = {
       figures: "图表",
       data: "数据",
       ai: "AI",
+      attachments: "附件",
       outputs: "导出",
       settings: "设置",
       projectInfo: "项目信息",
@@ -161,6 +166,7 @@ export const messages = {
     export: {
       markdownPackage: "导出 Markdown 文件夹",
       manifestJson: "导出项目 JSON",
+      projectFolder: "导出项目文件夹",
       wordDraft: "导出 Word 草稿",
       latexProject: "导出 LaTeX 项目",
       wordSoon: "即将支持。推荐路线：Markdown/Pandoc 转 DOCX。",

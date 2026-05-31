@@ -17,7 +17,8 @@ import type {
   ProjectActivity,
   ReferenceItem,
   SectionCreateInput,
-  SectionRenameInput
+  SectionRenameInput,
+  WorkspaceConfig
 } from "../types";
 import {
   appLog,
@@ -60,7 +61,7 @@ interface BrowserState {
 }
 
 export const defaultSettings: AppSettings = {
-  workspaceRoot: "workspace",
+  workspaceRoot: "PaperForgeWorkspace",
   defaultManuscriptMode: "word",
   llmProvider: {
     baseUrl: "https://api.openai.com/v1",
@@ -93,16 +94,20 @@ function normalizeProject(project: ProjectConfig): ProjectConfig {
   const targetJournal = project.targetJournal?.trim() || "Unspecified Journal";
   return {
     ...project,
+    version: project.version ?? "1.0.0",
     title,
     author,
     authors: project.authors ?? (author ? author.split(",").map((item) => item.trim()).filter(Boolean) : []),
     targetJournal,
+    journal: targetJournal === "Unspecified Journal" ? "" : targetJournal,
+    language: project.language ?? "en",
     citationStyle: project.citationStyle?.trim() || defaultSettings.defaultCitationStyle,
     exportMode: project.exportMode ?? project.manuscriptMode ?? defaultSettings.defaultExportMode,
     manuscript: project.manuscript ?? {
       sectionNaming: "numbered",
       sections: []
-    }
+    },
+    sections: project.manuscript?.sections ?? project.sections ?? []
   };
 }
 
@@ -121,7 +126,16 @@ function syncProjectManifest(project: ProjectConfig, sections: ManuscriptSection
         createdAt: section.createdAt,
         updatedAt: section.updatedAt
       }))
-    }
+    },
+    sections: sections.map((section) => ({
+      id: section.id,
+      title: section.title,
+      path: section.path,
+      order: section.order,
+      status: section.status,
+      createdAt: section.createdAt,
+      updatedAt: section.updatedAt
+    }))
   };
 }
 
@@ -170,6 +184,22 @@ export const api = {
     });
   },
 
+  initWorkspace(rootPath: string) {
+    return tauriOrBrowser<WorkspaceConfig>("init_workspace", { rootPath }, () => {
+      const state = loadState();
+      state.settings = { ...state.settings, workspaceRoot: rootPath || "PaperForgeWorkspace" };
+      saveState(state);
+      return {
+        version: "1.0.0",
+        workspaceName: "PaperForge Workspace",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        papersDir: "papers",
+        defaultLanguage: "en"
+      };
+    });
+  },
+
   listProjects() {
     return tauriOrBrowser<ProjectConfig[]>("list_projects", {}, () => loadState().projects.map(normalizeProject));
   },
@@ -199,7 +229,7 @@ export const api = {
         citationStyle: input.citationStyle || state.settings.defaultCitationStyle || "apa",
         exportMode: input.exportMode || state.settings.defaultExportMode || "markdown"
       };
-      const rootPath = `${input.workspaceRoot || state.settings.workspaceRoot}/${safeFolderName(normalizedInput.title)}`;
+      const rootPath = `${input.workspaceRoot || state.settings.workspaceRoot}/papers/${safeFolderName(normalizedInput.title)}`;
       const project = normalizeProject(createProjectConfig(normalizedInput, rootPath));
       state.projects = [project, ...state.projects];
       state.sectionsByProject[project.id] = project.manuscript.sections.map((section) => ({
@@ -289,20 +319,7 @@ export const api = {
       const state = loadState();
       const project = state.projects.find((item) => item.id === projectId);
       if (!project) throw new Error("Project not found");
-      return JSON.stringify(
-        {
-          exportedAt: nowIso(),
-          project,
-          sections: state.sectionsByProject[projectId] ?? [],
-          references: state.referencesByProject[projectId] ?? [],
-          citationTasks: state.citationTasksByProject[projectId] ?? [],
-          literature: state.literatureByProject[projectId] ?? [],
-          claims: state.claimsByProject[projectId] ?? [],
-          note: "PaperForge MVP manifest export. User manuscripts stay local."
-        },
-        null,
-        2
-      );
+      return JSON.stringify(syncProjectManifest(project, state.sectionsByProject[projectId] ?? []), null, 2);
     });
   },
 
@@ -603,7 +620,7 @@ export const api = {
       const state = loadState();
       const project = normalizeProject(state.projects.find((item) => item.id === projectId)!);
       const stamp = nowIso().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
-      const outputPath = `${project.rootPath}/outputs/paperforge-export-${stamp}`;
+      const outputPath = `${project.rootPath}/exports/markdown/paperforge-export-${stamp}`;
       const markdown = sections.length
         ? sections
             .slice()
@@ -619,10 +636,26 @@ export const api = {
         outputPath,
       logs: [
           "Browser fallback preview only. Desktop mode writes the package folder.",
-          "manifest.json, manuscript.md, sections/, references/, literature/, figures/, data/, claims/, export-report.json",
+          "manifest.json, paper.md, sections/, references/, attachments/, claims/, export-report.json",
           markdown.slice(0, 80)
       ],
       createdAt: nowIso()
+      };
+    });
+  },
+
+  exportProjectFolder(projectId: string) {
+    return tauriOrBrowser<ExportJob>("export_project_folder", { projectId }, () => {
+      const state = loadState();
+      const project = normalizeProject(state.projects.find((item) => item.id === projectId)!);
+      return {
+        id: makeId("export"),
+        projectId,
+        mode: "markdown",
+        status: "success",
+        outputPath: `${project.rootPath}/exports/project-folder/browser-preview`,
+        logs: ["Browser fallback preview only. Desktop mode writes a project folder snapshot."],
+        createdAt: nowIso()
       };
     });
   },

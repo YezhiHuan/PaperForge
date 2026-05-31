@@ -45,18 +45,18 @@ export const sectionTemplateOptions: Array<{ id: SectionTemplateId; label: strin
 
 export const projectFolders = [
   "manuscript/sections",
-  "references/csl",
-  "literature/pdfs",
-  "literature/notes",
-  "literature/embeddings",
-  "templates/latex_template",
-  "figures/raw",
-  "figures/processed",
-  "data/raw",
-  "data/processed",
-  "ai/prompts",
-  "ai/writing_logs",
-  "outputs"
+  "references/papers",
+  "references/bib",
+  "references/notes",
+  "attachments/figures",
+  "attachments/tables",
+  "attachments/raw-data",
+  "attachments/supplementary",
+  "exports/markdown",
+  "exports/json",
+  "exports/word",
+  "exports/latex",
+  ".paperforge"
 ];
 
 export function nowIso() {
@@ -108,10 +108,13 @@ export function createProjectConfig(input: ProjectCreateInput, rootPath: string)
   const sections = createInitialSections(input.sectionNames, input.sectionNaming);
   return {
     id: makeId("project"),
+    version: "1.0.0",
     title: input.title.trim() || "Untitled Paper",
     author: input.author.trim(),
     authors: input.author.trim() ? input.author.split(",").map((item) => item.trim()).filter(Boolean) : [],
     targetJournal: input.targetJournal.trim() || "Unspecified Journal",
+    journal: input.targetJournal.trim(),
+    language: "en",
     citationStyle: input.citationStyle?.trim() || "apa",
     exportMode: input.exportMode ?? input.manuscriptMode,
     manuscriptMode: input.manuscriptMode,
@@ -130,7 +133,16 @@ export function createProjectConfig(input: ProjectCreateInput, rootPath: string)
         createdAt: section.createdAt,
         updatedAt: section.updatedAt
       }))
-    }
+    },
+    sections: sections.map((section) => ({
+      id: section.id,
+      title: section.title,
+      path: section.path,
+      order: section.order,
+      status: section.status,
+      createdAt: section.createdAt,
+      updatedAt: section.updatedAt
+    }))
   };
 }
 
