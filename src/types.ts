@@ -7,6 +7,7 @@ export type ClaimStatus = "verified" | "needs_citation" | "unsupported";
 export type ExportStatus = "pending" | "running" | "success" | "failed";
 export type AppLogLevel = "info" | "warning" | "error" | "success";
 export type ThemeMode = "dark" | "light" | "eyeCare";
+export type Language = "en" | "zh";
 export type ExportWarningSeverity = "info" | "warning" | "error";
 export type SectionNamingMode = "numbered" | "slugOnly";
 export type SectionTemplateId = "empty" | "standard" | "engineeringSimulation" | "review";
@@ -32,7 +33,10 @@ export interface ProjectConfig {
   id: string;
   title: string;
   author: string;
+  authors: string[];
   targetJournal: string;
+  citationStyle: string;
+  exportMode: ManuscriptMode;
   manuscriptMode: ManuscriptMode;
   rootPath: string;
   createdAt: string;
@@ -45,6 +49,8 @@ export interface ProjectCreateInput {
   title: string;
   author: string;
   targetJournal: string;
+  citationStyle?: string;
+  exportMode?: ManuscriptMode;
   manuscriptMode: ManuscriptMode;
   workspaceRoot?: string;
   sectionNaming: SectionNamingMode;
@@ -172,6 +178,7 @@ export interface AppSettings {
   defaultCitationStyle: string;
   defaultExportMode: ManuscriptMode;
   themeMode: ThemeMode;
+  language: Language;
 }
 
 export interface FileTreeNode {

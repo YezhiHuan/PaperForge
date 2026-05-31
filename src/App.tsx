@@ -26,6 +26,8 @@ import {
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { api, defaultSettings } from "./lib/api";
+import { displayTitle, internalTitle, t } from "./i18n";
+import type { MessageKey } from "./i18n";
 import { createClaim, formatCitation, markdownToPreview, mergeSections, nowIso, sectionTemplateOptions } from "./lib/domain";
 import { APP_VERSION } from "./version";
 import type {
@@ -37,6 +39,7 @@ import type {
   ClaimRecord,
   ExportValidationWarning,
   ExportJob,
+  Language,
   LiteratureItem,
   ManuscriptMode,
   ManuscriptSection,
@@ -47,7 +50,8 @@ import type {
   ThemeMode
 } from "./types";
 
-type ToolTab = "ai" | "references" | "citations" | "literature" | "claims" | "export" | "settings";
+type ToolTab = "info" | "ai" | "references" | "citations" | "literature" | "claims" | "export" | "settings";
+type Translate = (key: MessageKey) => string;
 
 const cardVariants = {
   hidden: { opacity: 0, y: 14 },
@@ -118,6 +122,7 @@ function App() {
   const [exportWarnings, setExportWarnings] = useState<ExportValidationWarning[]>([]);
   const [draftSettings, setDraftSettings] = useState<AppSettings>(defaultSettings);
   const [claimText, setClaimText] = useState("");
+  const tr: Translate = (key) => t(settings.language, key);
 
   const activeSection = useMemo(
     () => sections.find((section) => section.id === activeSectionId) ?? sections[0],
@@ -177,7 +182,10 @@ function App() {
     event.preventDefault();
     const project = await api.createProject({
       ...projectForm,
-      workspaceRoot: projectForm.workspaceRoot || settings.workspaceRoot
+      workspaceRoot: projectForm.workspaceRoot || settings.workspaceRoot,
+      citationStyle: settings.defaultCitationStyle,
+      exportMode: settings.defaultExportMode,
+      manuscriptMode: projectForm.manuscriptMode || settings.defaultManuscriptMode
     });
     const nextProjects = await api.listProjects();
     setProjects(nextProjects);
@@ -199,7 +207,7 @@ function App() {
   }
 
   async function deleteProject(project: ProjectConfig) {
-    const ok = window.confirm(`Remove "${project.title}" from PaperForge project list? Local folder is not deleted.`);
+    const ok = window.confirm(`Remove "${displayTitle(project.title, settings.language)}" from PaperForge project list? Local folder is not deleted.`);
     if (!ok) return;
     await api.deleteProject(project.id);
     const nextProjects = await api.listProjects();
@@ -221,10 +229,26 @@ function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${project.title.replace(/[^\w.-]+/g, "_")}_paperforge_manifest.json`;
+    link.download = `${internalTitle(project.title).replace(/[^\w.-]+/g, "_")}_paperforge_manifest.json`;
     link.click();
     URL.revokeObjectURL(url);
     addLog("success", `Exported project manifest: ${project.title}`);
+  }
+
+  async function updateProjectMetadata(
+    project: ProjectConfig,
+    partial: Partial<Pick<ProjectConfig, "title" | "author" | "authors" | "targetJournal" | "manuscriptMode" | "citationStyle" | "exportMode">>
+  ) {
+    const updated = await api.updateProjectMetadata(project.id, partial);
+    setProjects((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+    if (activeProject?.id === updated.id) setActiveProject(updated);
+    addLog("success", `Updated project metadata: ${displayTitle(updated.title, settings.language)}`);
+  }
+
+  async function editProjectTitle(project: ProjectConfig) {
+    const title = window.prompt("Paper title", project.title === "Untitled Paper" ? "" : project.title);
+    if (title === null) return;
+    await updateProjectMetadata(project, { title });
   }
 
   async function saveActiveSection() {
@@ -359,7 +383,7 @@ function App() {
       const job = await api.exportProject(activeProject.id, mode, sections);
       setExportJob(job);
       setExportRunning(false);
-      addLog("success", `${mode} export finished: ${job.outputPath}`);
+      addLog(job.status === "success" ? "success" : "info", `${mode} export ${job.status}: ${job.outputPath || job.logs[0]}`);
     }, 620);
   }
 
@@ -369,10 +393,12 @@ function App() {
     addLog(opened ? "info" : "warning", opened ? "Opened output folder." : "Output folder open unavailable in browser mode.");
   }
 
-  async function saveSettings() {
-    const saved = await api.saveSettings(draftSettings);
+  async function applySettings(nextSettings: AppSettings) {
+    setDraftSettings(nextSettings);
+    setSettings(nextSettings);
+    const saved = await api.saveSettings(nextSettings);
     setSettings(saved);
-    addLog("success", "Settings saved. API key kept out of project.json.");
+    setDraftSettings(saved);
   }
 
   return (
@@ -382,6 +408,8 @@ function App() {
         onDashboard={() => setActiveProject(null)}
         onNew={openCreateModal}
         version={APP_VERSION}
+        t={tr}
+        language={settings.language}
       />
 
       {!activeProject ? (
@@ -392,6 +420,9 @@ function App() {
           onImport={() => setShowImportModal(true)}
           onDelete={deleteProject}
           onExport={exportProjectManifest}
+          onEditTitle={editProjectTitle}
+          t={tr}
+          language={settings.language}
         />
       ) : (
         <main className="workspace-grid">
@@ -404,26 +435,38 @@ function App() {
             setActiveSectionId={setActiveSectionId}
             onCreateSection={createSectionFromPrompt}
             onRenameSection={renameSectionFromPrompt}
+            onSettings={() => setToolTab("settings")}
+            t={tr}
+            language={settings.language}
           />
 
           <section className="editor-shell">
             <div className="editor-toolbar">
               <div>
-                <p className="eyebrow">Manuscript</p>
-                <h1>{activeSection?.title ?? "No section"}</h1>
+                <p className="eyebrow">{tr("project.manuscript")}</p>
+                <div className="title-edit-row">
+                  <input
+                    className="title-input"
+                    value={activeProject.title === "Untitled Paper" ? "" : activeProject.title}
+                    placeholder={displayTitle(activeProject.title, settings.language)}
+                    onChange={(event) => setActiveProject({ ...activeProject, title: event.target.value })}
+                    onBlur={(event) => updateProjectMetadata(activeProject, { title: event.target.value })}
+                  />
+                  <span>{activeSection?.title ?? "No section"}</span>
+                </div>
               </div>
               <div className="toolbar-actions">
                 <button disabled={!activeSection} className={editorMode === "edit" ? "seg active" : "seg"} onClick={() => setEditorMode("edit")}>
-                  Edit
+                  {tr("actions.edit")}
                 </button>
                 <button disabled={!activeSection} className={editorMode === "preview" ? "seg active" : "seg"} onClick={() => setEditorMode("preview")}>
-                  Preview
+                  {tr("actions.preview")}
                 </button>
                 <button className="secondary-btn" onClick={createSectionFromPrompt}>
-                  <Plus size={15} /> Create section
+                  <Plus size={15} /> {tr("actions.createSection")}
                 </button>
                 <button className="primary-btn" disabled={!activeSection} onClick={saveActiveSection}>
-                  <Save size={15} /> Save
+                  <Save size={15} /> {tr("actions.save")}
                 </button>
               </div>
             </div>
@@ -456,10 +499,10 @@ function App() {
             ) : (
               <motion.div className="manuscript-empty" variants={panelVariants} initial="hidden" animate="show">
                 <FileText size={34} />
-                <h2>No manuscript sections yet.</h2>
+                <h2>{tr("project.emptyManuscript")}</h2>
                 <p>No manuscript sections yet. Create your first section to start writing.</p>
                 <button className="primary-btn" onClick={createSectionFromPrompt}>
-                  <Plus size={15} /> Create section
+                  <Plus size={15} /> {tr("actions.createSection")}
                 </button>
               </motion.div>
             )}
@@ -500,14 +543,15 @@ function App() {
             exportRunning={exportRunning}
             exportWarnings={exportWarnings}
             runExport={runExport}
+            exportManifest={() => exportProjectManifest(activeProject)}
             openOutputFolder={openOutputFolder}
             settings={draftSettings}
-            setSettings={setDraftSettings}
-            saveSettings={saveSettings}
+            setSettings={applySettings}
+            updateProjectMetadata={(partial) => updateProjectMetadata(activeProject, partial)}
             combinedDraft={mergeSections(sections)}
+            t={tr}
+            language={settings.language}
           />
-
-          <StatusPanel logs={logs} tasks={citationTasks} exportJob={exportJob} />
         </main>
       )}
 
@@ -518,6 +562,7 @@ function App() {
             setForm={setProjectForm}
             onClose={() => setShowCreateModal(false)}
             onSubmit={createProject}
+            t={tr}
           />
         )}
       </AnimatePresence>
@@ -529,6 +574,7 @@ function App() {
             setForm={setImportForm}
             onClose={() => setShowImportModal(false)}
             onSubmit={importProject}
+            t={tr}
           />
         )}
       </AnimatePresence>
@@ -536,7 +582,21 @@ function App() {
   );
 }
 
-function TopBar({ project, onDashboard, onNew, version }: { project: ProjectConfig | null; onDashboard: () => void; onNew: () => void; version: string }) {
+function TopBar({
+  project,
+  onDashboard,
+  onNew,
+  version,
+  t,
+  language
+}: {
+  project: ProjectConfig | null;
+  onDashboard: () => void;
+  onNew: () => void;
+  version: string;
+  t: Translate;
+  language: Language;
+}) {
   return (
     <header className="topbar">
       <button className="brand" onClick={onDashboard}>
@@ -544,9 +604,9 @@ function TopBar({ project, onDashboard, onNew, version }: { project: ProjectConf
         <span>PaperForge</span>
         <small>v{version}</small>
       </button>
-      <div className="topbar-project">{project ? `${project.title} · ${project.manuscriptMode}` : "Local-first manuscript workspace"}</div>
+      <div className="topbar-project">{project ? `${displayTitle(project.title, language)} · ${project.manuscriptMode}` : t("app.tagline")}</div>
       <button className="primary-btn" onClick={onNew}>
-        <Plus size={15} /> New Project
+        <Plus size={15} /> {t("actions.newProject")}
       </button>
     </header>
   );
@@ -558,7 +618,10 @@ function Dashboard({
   onNew,
   onImport,
   onDelete,
-  onExport
+  onExport,
+  onEditTitle,
+  t,
+  language
 }: {
   projects: ProjectConfig[];
   onOpen: (project: ProjectConfig) => void;
@@ -566,21 +629,24 @@ function Dashboard({
   onImport: () => void;
   onDelete: (project: ProjectConfig) => void;
   onExport: (project: ProjectConfig) => void;
+  onEditTitle: (project: ProjectConfig) => void;
+  t: Translate;
+  language: Language;
 }) {
   return (
     <main className="dashboard">
       <section className="dashboard-hero">
-        <p className="eyebrow">Research IDE</p>
-        <h1>Write papers from local folders, citations, evidence, and AI proposals.</h1>
+        <p className="eyebrow">{t("app.researchIde")}</p>
+        <h1>{t("dashboard.headline")}</h1>
         <button className="primary-btn large" onClick={onNew}>
-          <Plus size={18} /> Create Paper Project
+          <Plus size={18} /> {t("actions.createProject")}
         </button>
         <button className="secondary-btn large" onClick={onImport}>
-          <FolderOpen size={18} /> Import Existing
+          <FolderOpen size={18} /> {t("actions.importExisting")}
         </button>
       </section>
       <motion.section className="project-grid" initial="hidden" animate="show">
-        {projects.length === 0 && <div className="empty-state">No projects yet. Create one to generate workspace structure.</div>}
+        {projects.length === 0 && <div className="empty-state">{t("dashboard.empty")}</div>}
         {projects.map((project, index) => (
           <motion.article
             className="project-card"
@@ -590,13 +656,15 @@ function Dashboard({
           >
             <button className="project-open" onClick={() => onOpen(project)}>
               <span className="mode-chip">{project.manuscriptMode}</span>
-              <h2>{project.title}</h2>
-              <p>{project.author || "Unknown author"}</p>
+              <h2>{displayTitle(project.title, language)}</h2>
+              <p>{project.authors?.length ? project.authors.join(", ") : t("app.noAuthors")}</p>
+              <p>{project.targetJournal === "Unspecified Journal" ? t("app.noJournal") : project.targetJournal}</p>
               <small>{project.rootPath}</small>
             </button>
             <div className="project-actions">
-              <button onClick={() => onExport(project)}><Download size={13} /> Export</button>
-              <button className="danger-action" onClick={() => onDelete(project)}><X size={13} /> Remove</button>
+              <button onClick={() => onEditTitle(project)}><Pencil size={13} /> {t("actions.updateTitle")}</button>
+              <button onClick={() => onExport(project)}><Download size={13} /> {t("export.manifestJson")}</button>
+              <button className="danger-action" onClick={() => onDelete(project)}><X size={13} /> {t("actions.remove")}</button>
             </div>
           </motion.article>
         ))}
@@ -613,7 +681,10 @@ function Sidebar({
   setExpandedFolders,
   setActiveSectionId,
   onCreateSection,
-  onRenameSection
+  onRenameSection,
+  onSettings,
+  t,
+  language
 }: {
   project: ProjectConfig;
   sections: ManuscriptSection[];
@@ -623,54 +694,71 @@ function Sidebar({
   setActiveSectionId: (id: string) => void;
   onCreateSection: () => void;
   onRenameSection: (section: ManuscriptSection) => void;
+  onSettings: () => void;
+  t: Translate;
+  language: Language;
 }) {
   const folders = ["manuscript", "references", "literature", "figures", "data", "ai", "outputs"];
+  const folderLabels: Record<string, string> = {
+    manuscript: t("project.manuscript"),
+    references: t("project.references"),
+    literature: t("project.literature"),
+    figures: t("project.figures"),
+    data: t("project.data"),
+    ai: t("project.ai"),
+    outputs: t("project.outputs")
+  };
   return (
     <aside className="sidebar">
-      <div className="sidebar-title">
-        <Folder size={16} /> {project.title}
-      </div>
-      {folders.map((folder) => (
-        <div key={folder} className="tree-block">
-          <button
-            className="tree-folder"
-            onClick={() => setExpandedFolders({ ...expandedFolders, [folder]: !expandedFolders[folder] })}
-          >
-            <ChevronDown className={expandedFolders[folder] ? "chev open" : "chev"} size={15} />
-            {folder}
-          </button>
-          <AnimatePresence initial={false}>
-            {expandedFolders[folder] && (
-              <motion.div className="tree-children" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
-                {folder === "manuscript"
-                  ? (
-                    <>
-                      <button className="tree-file new-section" onClick={onCreateSection}>
-                        <Plus size={14} /> New Section
-                      </button>
-                      {sections.length === 0 && <span className="tree-file muted">Empty manuscript</span>}
-                      {sections.map((section) => (
-                        <div className={section.id === activeSectionId ? "tree-file-row active" : "tree-file-row"} key={section.id}>
-                          <button
-                            className="tree-file"
-                            onClick={() => setActiveSectionId(section.id)}
-                            title={`${section.title} · ${section.path}`}
-                          >
-                            <FileText size={14} /> {section.title}
-                          </button>
-                          <button className="tree-icon-btn" onClick={() => onRenameSection(section)} title="Rename title; file path stays unchanged">
-                            <Pencil size={13} />
-                          </button>
-                        </div>
-                      ))}
-                    </>
-                  )
-                  : <span className="tree-file muted">{folder === "references" ? "references.bib" : folder === "ai" ? "claims.json" : "MVP folder"}</span>}
-              </motion.div>
-            )}
-          </AnimatePresence>
+      <div className="sidebar-scroll">
+        <div className="sidebar-title">
+          <Folder size={16} /> {displayTitle(project.title, language)}
         </div>
-      ))}
+        {folders.map((folder) => (
+          <div key={folder} className="tree-block">
+            <button
+              className="tree-folder"
+              onClick={() => setExpandedFolders({ ...expandedFolders, [folder]: !expandedFolders[folder] })}
+            >
+              <ChevronDown className={expandedFolders[folder] ? "chev open" : "chev"} size={15} />
+              {folderLabels[folder]}
+            </button>
+            <AnimatePresence initial={false}>
+              {expandedFolders[folder] && (
+                <motion.div className="tree-children" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
+                  {folder === "manuscript"
+                    ? (
+                      <>
+                        <button className="tree-file new-section" onClick={onCreateSection}>
+                          <Plus size={14} /> {t("project.newSection")}
+                        </button>
+                        {sections.length === 0 && <span className="tree-file muted">{t("project.emptyManuscript")}</span>}
+                        {sections.map((section) => (
+                          <div className={section.id === activeSectionId ? "tree-file-row active" : "tree-file-row"} key={section.id}>
+                            <button
+                              className="tree-file"
+                              onClick={() => setActiveSectionId(section.id)}
+                              title={`${section.title} · ${section.path}`}
+                            >
+                              <FileText size={14} /> {section.title}
+                            </button>
+                            <button className="tree-icon-btn" onClick={() => onRenameSection(section)} title="Rename title; file path stays unchanged">
+                              <Pencil size={13} />
+                            </button>
+                          </div>
+                        ))}
+                      </>
+                    )
+                    : <span className="tree-file muted">{folder === "references" ? "references.bib" : folder === "ai" ? "claims.json" : t("project.mvpFolder")}</span>}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        ))}
+      </div>
+      <button className="sidebar-settings" onClick={onSettings}>
+        <Settings size={15} /> {t("project.settings")}
+      </button>
     </aside>
   );
 }
@@ -710,20 +798,24 @@ function RightPanel(props: {
   exportRunning: boolean;
   exportWarnings: ExportValidationWarning[];
   runExport: (mode: ManuscriptMode) => void;
+  exportManifest: () => void;
   openOutputFolder: () => void;
   settings: AppSettings;
   setSettings: (settings: AppSettings) => void;
-  saveSettings: () => void;
+  updateProjectMetadata: (partial: Partial<Pick<ProjectConfig, "title" | "author" | "authors" | "targetJournal" | "manuscriptMode" | "citationStyle" | "exportMode">>) => void;
   combinedDraft: string;
+  t: Translate;
+  language: Language;
 }) {
   const tabs: Array<[ToolTab, string, ReactNode]> = [
+    ["info", props.t("project.projectInfo"), <FileText size={14} />],
     ["ai", "AI", <Brain size={14} />],
     ["references", "Refs", <BookOpen size={14} />],
     ["citations", "Cites", <Clipboard size={14} />],
     ["literature", "Library", <Library size={14} />],
     ["claims", "Claims", <Check size={14} />],
-    ["export", "Export", <Download size={14} />],
-    ["settings", "Settings", <Settings size={14} />]
+    ["export", props.t("tools.export"), <Download size={14} />],
+    ["settings", props.t("tools.settings"), <Settings size={14} />]
   ];
 
   return (
@@ -737,6 +829,7 @@ function RightPanel(props: {
       </div>
       <AnimatePresence mode="wait">
         <motion.div key={props.tab} variants={panelVariants} initial="hidden" animate="show" exit="exit" className="tool-body">
+          {props.tab === "info" && <ProjectInfoTool {...props} />}
           {props.tab === "ai" && <AiTool {...props} />}
           {props.tab === "references" && <ReferenceTool {...props} />}
           {props.tab === "citations" && <CitationTool {...props} />}
@@ -747,6 +840,52 @@ function RightPanel(props: {
         </motion.div>
       </AnimatePresence>
     </aside>
+  );
+}
+
+function ProjectInfoTool(props: Parameters<typeof RightPanel>[0]) {
+  return (
+    <>
+      <h2>{props.t("project.projectInfo")}</h2>
+      <div className="stack">
+        <label>
+          {props.t("modal.paperTitle")}
+          <input
+            value={props.project.title === "Untitled Paper" ? "" : props.project.title}
+            placeholder={displayTitle(props.project.title, props.language)}
+            onChange={(event) => props.updateProjectMetadata({ title: event.target.value })}
+          />
+        </label>
+        <label>
+          {props.t("modal.author")}
+          <input
+            value={props.project.authors?.join(", ") ?? props.project.author ?? ""}
+            placeholder={props.t("app.noAuthors")}
+            onChange={(event) => props.updateProjectMetadata({ author: event.target.value })}
+          />
+        </label>
+        <label>
+          {props.t("modal.journal")}
+          <input
+            value={props.project.targetJournal === "Unspecified Journal" ? "" : props.project.targetJournal}
+            placeholder={props.t("app.noJournal")}
+            onChange={(event) => props.updateProjectMetadata({ targetJournal: event.target.value })}
+          />
+        </label>
+        <label>
+          {props.t("settings.citationStyle")}
+          <input value={props.project.citationStyle} onChange={(event) => props.updateProjectMetadata({ citationStyle: event.target.value })} />
+        </label>
+        <label>
+          {props.t("settings.exportMode")}
+          <select value={props.project.exportMode} onChange={(event) => props.updateProjectMetadata({ exportMode: event.target.value as ManuscriptMode })}>
+            <option value="markdown">markdown</option>
+            <option value="word">word</option>
+            <option value="latex">latex</option>
+          </select>
+        </label>
+      </div>
+    </>
   );
 }
 
@@ -877,13 +1016,14 @@ function ClaimTool(props: Parameters<typeof RightPanel>[0]) {
 function ExportTool(props: Parameters<typeof RightPanel>[0]) {
   return (
     <>
-      <h2>Export</h2>
+      <h2>{props.t("tools.export")}</h2>
       <div className="quick-grid">
-        <button onClick={() => props.runExport("word")}>Word draft</button>
-        <button onClick={() => props.runExport("latex")}>LaTeX</button>
-        <button onClick={() => props.runExport("markdown")}>Markdown/Pandoc</button>
+        <button className="export-primary" onClick={() => props.runExport("markdown")}>{props.t("export.markdownPackage")}</button>
+        <button onClick={() => props.runExport("word")} title={props.t("export.wordSoon")} disabled>{props.t("export.wordDraft")}</button>
+        <button onClick={() => props.runExport("latex")} title={props.t("export.latexSoon")} disabled>{props.t("export.latexProject")}</button>
+        <button onClick={props.exportManifest}>{props.t("export.manifestJson")}</button>
       </div>
-      {props.exportRunning && <div className="running-dots">Export running<span>.</span><span>.</span><span>.</span></div>}
+      {props.exportRunning && <div className="running-dots">{props.t("export.running")}<span>.</span><span>.</span><span>.</span></div>}
       {props.exportWarnings.length > 0 && (
         <div className="card-list">
           {props.exportWarnings.map((warning) => (
@@ -897,17 +1037,17 @@ function ExportTool(props: Parameters<typeof RightPanel>[0]) {
       {props.exportJob && (
         <div className="proposal-card">
           <span className={`status ${props.exportJob.status}`}>{props.exportJob.status}</span>
-          <strong>{props.exportJob.outputPath || "Preparing output"}</strong>
+          <strong>{props.exportJob.outputPath || props.t("export.preparing")}</strong>
           {props.exportJob.logs.map((line) => <p key={line}>{line}</p>)}
           {props.exportJob.outputPath && (
             <button className="secondary-btn wide" onClick={props.openOutputFolder}>
-              <ExternalLink size={14} /> Open output folder
+              <ExternalLink size={14} /> {props.t("actions.openOutputFolder")}
             </button>
           )}
         </div>
       )}
       <details>
-        <summary>Combined draft preview</summary>
+        <summary>{props.t("export.combinedPreview")}</summary>
         <pre>{props.combinedDraft.slice(0, 1200)}</pre>
       </details>
     </>
@@ -918,26 +1058,38 @@ function SettingsTool(props: Parameters<typeof RightPanel>[0]) {
   const themeOptions: Array<[ThemeMode, string]> = [["dark", "Dark"], ["light", "Light"], ["eyeCare", "Eye-care"]];
   return (
     <>
-      <h2>Settings</h2>
+      <h2>{props.t("tools.settings")}</h2>
       <div className="stack">
-        <label>Workspace root<input value={props.settings.workspaceRoot} onChange={(event) => props.setSettings({ ...props.settings, workspaceRoot: event.target.value })} /></label>
-        <label>Default mode
+        <label>{props.t("settings.language")}
+          <select value={props.settings.language} onChange={(event) => props.setSettings({ ...props.settings, language: event.target.value as Language })}>
+            <option value="en">{props.t("settings.english")}</option>
+            <option value="zh">{props.t("settings.chinese")}</option>
+          </select>
+        </label>
+        <label>{props.t("settings.workspaceRoot")}<input value={props.settings.workspaceRoot} onChange={(event) => props.setSettings({ ...props.settings, workspaceRoot: event.target.value })} /></label>
+        <label>{props.t("settings.defaultMode")}
           <select value={props.settings.defaultManuscriptMode} onChange={(event) => props.setSettings({ ...props.settings, defaultManuscriptMode: event.target.value as ManuscriptMode })}>
             <option value="word">word</option>
             <option value="latex">latex</option>
             <option value="markdown">markdown</option>
           </select>
         </label>
-        <label>Color theme
+        <label>{props.t("settings.exportMode")}
+          <select value={props.settings.defaultExportMode} onChange={(event) => props.setSettings({ ...props.settings, defaultExportMode: event.target.value as ManuscriptMode })}>
+            <option value="markdown">markdown</option>
+            <option value="word">word</option>
+            <option value="latex">latex</option>
+          </select>
+        </label>
+        <label>{props.t("settings.colorTheme")}
           <select value={props.settings.themeMode} onChange={(event) => props.setSettings({ ...props.settings, themeMode: event.target.value as ThemeMode })}>
             {themeOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}
           </select>
         </label>
-        <label>Base URL<input value={props.settings.llmProvider.baseUrl} onChange={(event) => props.setSettings({ ...props.settings, llmProvider: { ...props.settings.llmProvider, baseUrl: event.target.value } })} /></label>
-        <label>API key<input type="password" value={props.settings.llmProvider.apiKey} onChange={(event) => props.setSettings({ ...props.settings, llmProvider: { ...props.settings.llmProvider, apiKey: event.target.value } })} /></label>
-        <label>Model<input value={props.settings.llmProvider.model} onChange={(event) => props.setSettings({ ...props.settings, llmProvider: { ...props.settings.llmProvider, model: event.target.value } })} /></label>
-        <label>Citation style<input value={props.settings.defaultCitationStyle} onChange={(event) => props.setSettings({ ...props.settings, defaultCitationStyle: event.target.value })} /></label>
-        <button className="primary-btn wide" onClick={props.saveSettings}>Save settings</button>
+        <label>{props.t("settings.baseUrl")}<input value={props.settings.llmProvider.baseUrl} onChange={(event) => props.setSettings({ ...props.settings, llmProvider: { ...props.settings.llmProvider, baseUrl: event.target.value } })} /></label>
+        <label>{props.t("settings.apiKey")}<input type="password" value={props.settings.llmProvider.apiKey} onChange={(event) => props.setSettings({ ...props.settings, llmProvider: { ...props.settings.llmProvider, apiKey: event.target.value } })} /></label>
+        <label>{props.t("settings.model")}<input value={props.settings.llmProvider.model} onChange={(event) => props.setSettings({ ...props.settings, llmProvider: { ...props.settings.llmProvider, model: event.target.value } })} /></label>
+        <label>{props.t("settings.citationStyle")}<input value={props.settings.defaultCitationStyle} onChange={(event) => props.setSettings({ ...props.settings, defaultCitationStyle: event.target.value })} /></label>
       </div>
     </>
   );
@@ -962,12 +1114,14 @@ function CreateProjectModal({
   form,
   setForm,
   onClose,
-  onSubmit
+  onSubmit,
+  t
 }: {
   form: typeof emptyProjectForm;
   setForm: (form: typeof emptyProjectForm) => void;
   onClose: () => void;
   onSubmit: (event: FormEvent) => void;
+  t: Translate;
 }) {
   const setTemplate = (templateId: SectionTemplateId) => {
     const template = sectionTemplateOptions.find((item) => item.id === templateId) ?? sectionTemplateOptions[0];
@@ -992,34 +1146,34 @@ function CreateProjectModal({
     <motion.div className="modal-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
       <motion.form className="modal" onSubmit={onSubmit} initial={{ opacity: 0, scale: 0.96, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96 }}>
         <button type="button" className="close-btn" onClick={onClose}><X size={16} /></button>
-        <h2>Create paper project</h2>
-        <input required placeholder="Paper title" value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
-        <input placeholder="Author" value={form.author} onChange={(event) => setForm({ ...form, author: event.target.value })} />
-        <input placeholder="Target journal" value={form.targetJournal} onChange={(event) => setForm({ ...form, targetJournal: event.target.value })} />
+        <h2>{t("modal.createTitle")}</h2>
+        <input placeholder={t("modal.paperTitle")} value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
+        <input placeholder={t("modal.author")} value={form.author} onChange={(event) => setForm({ ...form, author: event.target.value })} />
+        <input placeholder={t("modal.journal")} value={form.targetJournal} onChange={(event) => setForm({ ...form, targetJournal: event.target.value })} />
         <select value={form.manuscriptMode} onChange={(event) => setForm({ ...form, manuscriptMode: event.target.value as ManuscriptMode })}>
           <option value="word">word</option>
           <option value="latex">latex</option>
           <option value="markdown">markdown</option>
         </select>
-        <input placeholder="Workspace root (optional)" value={form.workspaceRoot} onChange={(event) => setForm({ ...form, workspaceRoot: event.target.value })} />
+        <input placeholder={t("modal.workspaceRoot")} value={form.workspaceRoot} onChange={(event) => setForm({ ...form, workspaceRoot: event.target.value })} />
         <section className="section-builder">
           <div>
-            <h3>Manuscript Sections / 论文章节</h3>
-            <p className="modal-note">Default is Empty manuscript. Blank section names are ignored.</p>
+            <h3>{t("modal.sections")}</h3>
+            <p className="modal-note">{t("modal.sectionNote")}</p>
           </div>
-          <label>Template
+          <label>{t("modal.template")}
             <select value={form.sectionTemplate} onChange={(event) => setTemplate(event.target.value as SectionTemplateId)}>
               {sectionTemplateOptions.map((template) => <option value={template.id} key={template.id}>{template.label}</option>)}
             </select>
           </label>
-          <label>Section file naming
+          <label>{t("modal.naming")}
             <select value={form.sectionNaming} onChange={(event) => setForm({ ...form, sectionNaming: event.target.value as SectionNamingMode })}>
               <option value="numbered">numbered</option>
               <option value="slugOnly">slug only</option>
             </select>
           </label>
           <div className="section-list">
-            {form.sectionNames.length === 0 && <div className="section-empty-note">No sections selected. Project will start with an empty manuscript.</div>}
+            {form.sectionNames.length === 0 && <div className="section-empty-note">{t("modal.emptySections")}</div>}
             {form.sectionNames.map((sectionName, index) => (
               <div className="section-row" key={`${index}-${sectionName}`}>
                 <span>{String(index + 1).padStart(2, "0")}</span>
@@ -1031,10 +1185,10 @@ function CreateProjectModal({
             ))}
           </div>
           <button type="button" className="secondary-btn wide" onClick={() => setForm({ ...form, sectionNames: [...form.sectionNames, ""], sectionTemplate: "empty" })}>
-            <Plus size={14} /> Add custom section
+            <Plus size={14} /> {t("actions.addCustomSection")}
           </button>
         </section>
-        <button className="primary-btn wide">Generate local folder structure</button>
+        <button className="primary-btn wide">{t("modal.generate")}</button>
       </motion.form>
     </motion.div>
   );
@@ -1044,21 +1198,23 @@ function ImportProjectModal({
   form,
   setForm,
   onClose,
-  onSubmit
+  onSubmit,
+  t
 }: {
   form: typeof emptyImportForm;
   setForm: (form: typeof emptyImportForm) => void;
   onClose: () => void;
   onSubmit: (event: FormEvent) => void;
+  t: Translate;
 }) {
   return (
     <motion.div className="modal-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
       <motion.form className="modal" onSubmit={onSubmit} initial={{ opacity: 0, scale: 0.96, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96 }}>
         <button type="button" className="close-btn" onClick={onClose}><X size={16} /></button>
-        <h2>Import existing project</h2>
-        <p className="modal-note">Enter a PaperForge project folder path. Existing manuscripts are not overwritten.</p>
+        <h2>{t("modal.importTitle")}</h2>
+        <p className="modal-note">{t("modal.importNote")}</p>
         <input required placeholder="F:\\Papers\\My_Project" value={form.rootPath} onChange={(event) => setForm({ rootPath: event.target.value })} />
-        <button className="primary-btn wide"><FolderOpen size={15} /> Import folder</button>
+        <button className="primary-btn wide"><FolderOpen size={15} /> {t("modal.importFolder")}</button>
       </motion.form>
     </motion.div>
   );

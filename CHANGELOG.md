@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.1
+
+### Added
+
+- English and Chinese UI language switching.
+- Optional paper metadata defaults for title, authors, and journal.
+- Editable paper title from dashboard, IDE header, and project info panel.
+- Markdown package export with manuscript, sections, references, figures, claims, and export report.
+- Export architecture placeholders for future Word and LaTeX workflows.
+
+### Changed
+
+- Settings now apply immediately without a confirmation step.
+- Removed bottom activity/export status area for a cleaner layout.
+- Moved settings access to the sidebar footer.
+- Improved sidebar and dropdown contrast across themes.
+
+### Fixed
+
+- Empty paper metadata no longer breaks project creation or display.
+- Low-contrast sidebar and dropdown text.
+
 ## 0.3.0
 
 - Optional manuscript section initialization.

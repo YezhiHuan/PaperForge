@@ -14,6 +14,8 @@ struct ProjectCreateInput {
     author: String,
     target_journal: String,
     manuscript_mode: ManuscriptMode,
+    citation_style: Option<String>,
+    export_mode: Option<ManuscriptMode>,
     workspace_root: Option<String>,
     section_naming: SectionNamingMode,
     section_names: Vec<String>,
@@ -23,9 +25,18 @@ struct ProjectCreateInput {
 #[serde(rename_all = "camelCase")]
 struct ProjectConfig {
     id: String,
+    #[serde(default = "default_project_title")]
     title: String,
+    #[serde(default)]
     author: String,
+    #[serde(default)]
+    authors: Vec<String>,
+    #[serde(default = "default_target_journal")]
     target_journal: String,
+    #[serde(default = "default_citation_style")]
+    citation_style: String,
+    #[serde(default = "default_export_mode")]
+    export_mode: ManuscriptMode,
     manuscript_mode: ManuscriptMode,
     root_path: String,
     created_at: String,
@@ -33,6 +44,18 @@ struct ProjectConfig {
     citation_backend: CitationBackend,
     #[serde(default = "default_manuscript_manifest")]
     manuscript: ManuscriptManifest,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ProjectMetadataPatch {
+    title: Option<String>,
+    author: Option<String>,
+    authors: Option<Vec<String>>,
+    target_journal: Option<String>,
+    manuscript_mode: Option<ManuscriptMode>,
+    citation_style: Option<String>,
+    export_mode: Option<ManuscriptMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,12 +84,34 @@ fn default_manuscript_manifest() -> ManuscriptManifest {
     }
 }
 
+fn default_project_title() -> String {
+    "Untitled Paper".to_string()
+}
+
+fn default_target_journal() -> String {
+    "Unspecified Journal".to_string()
+}
+
+fn default_citation_style() -> String {
+    "apa".to_string()
+}
+
+fn default_export_mode() -> ManuscriptMode {
+    ManuscriptMode::Markdown
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum ManuscriptMode {
     Word,
     Latex,
     Markdown,
+}
+
+impl Default for ManuscriptMode {
+    fn default() -> Self {
+        ManuscriptMode::Markdown
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -300,6 +345,17 @@ enum ThemeMode {
     EyeCare,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Language {
+    En,
+    Zh,
+}
+
+fn default_language() -> Language {
+    Language::En
+}
+
 fn default_theme_mode() -> ThemeMode {
     ThemeMode::Dark
 }
@@ -322,6 +378,8 @@ struct AppSettings {
     default_export_mode: ManuscriptMode,
     #[serde(default = "default_theme_mode")]
     theme_mode: ThemeMode,
+    #[serde(default = "default_language")]
+    language: Language,
 }
 
 fn now_iso() -> String {
@@ -353,7 +411,9 @@ fn app_logs_path() -> Result<PathBuf, String> {
 fn safe_folder_name(title: &str) -> String {
     let cleaned: String = title
         .chars()
-        .filter(|ch| !matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') && !ch.is_control())
+        .filter(|ch| {
+            !matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') && !ch.is_control()
+        })
         .collect();
     let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join("_");
     if collapsed.is_empty() {
@@ -381,8 +441,9 @@ fn default_settings() -> AppSettings {
             model: "gpt-4.1-mini".to_string(),
         },
         default_citation_style: "apa".to_string(),
-        default_export_mode: ManuscriptMode::Word,
+        default_export_mode: ManuscriptMode::Markdown,
         theme_mode: ThemeMode::Dark,
+        language: Language::En,
     }
 }
 
@@ -392,7 +453,8 @@ fn read_registry() -> Result<Vec<ProjectConfig>, String> {
         return Ok(vec![]);
     }
     let raw = fs::read_to_string(path).map_err(|err| err.to_string())?;
-    serde_json::from_str(&raw).map_err(|err| err.to_string())
+    let projects: Vec<ProjectConfig> = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
+    Ok(projects.into_iter().map(normalize_project).collect())
 }
 
 fn write_registry(projects: &[ProjectConfig]) -> Result<(), String> {
@@ -408,6 +470,32 @@ fn project_by_id(project_id: &str) -> Result<ProjectConfig, String> {
         .into_iter()
         .find(|project| project.id == project_id)
         .ok_or_else(|| "Project not found".to_string())
+}
+
+fn normalize_project(mut project: ProjectConfig) -> ProjectConfig {
+    if project.title.trim().is_empty() {
+        project.title = default_project_title();
+    } else {
+        project.title = project.title.trim().to_string();
+    }
+    project.author = project.author.trim().to_string();
+    if project.authors.is_empty() && !project.author.is_empty() {
+        project.authors = project
+            .author
+            .split(',')
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty())
+            .collect();
+    }
+    if project.target_journal.trim().is_empty() {
+        project.target_journal = default_target_journal();
+    } else {
+        project.target_journal = project.target_journal.trim().to_string();
+    }
+    if project.citation_style.trim().is_empty() {
+        project.citation_style = default_citation_style();
+    }
+    project
 }
 
 fn project_manifest_path(root: &Path) -> PathBuf {
@@ -437,14 +525,23 @@ fn slugify_title(title: &str) -> String {
     slug.trim_matches('-').to_string()
 }
 
-fn make_section_filename(title: &str, index: usize, naming: &SectionNamingMode, existing: &mut Vec<String>) -> String {
+fn make_section_filename(
+    title: &str,
+    index: usize,
+    naming: &SectionNamingMode,
+    existing: &mut Vec<String>,
+) -> String {
     let fallback = match naming {
         SectionNamingMode::Numbered => "section".to_string(),
         SectionNamingMode::SlugOnly => format!("section-{:03}", index),
     };
     let slug = {
         let value = slugify_title(title);
-        if value.is_empty() { fallback } else { value }
+        if value.is_empty() {
+            fallback
+        } else {
+            value
+        }
     };
     let base = match naming {
         SectionNamingMode::Numbered => format!("{:02}_{}", index, slug),
@@ -460,7 +557,10 @@ fn make_section_filename(title: &str, index: usize, naming: &SectionNamingMode, 
     filename
 }
 
-fn section_from_manifest(project: &ProjectConfig, manifest: &ManuscriptManifestSection) -> Result<ManuscriptSection, String> {
+fn section_from_manifest(
+    project: &ProjectConfig,
+    manifest: &ManuscriptManifestSection,
+) -> Result<ManuscriptSection, String> {
     let root = PathBuf::from(&project.root_path);
     let path = root.join(&manifest.path);
     let content = if path.exists() {
@@ -498,7 +598,10 @@ fn manifest_from_section(section: &ManuscriptSection) -> ManuscriptManifestSecti
     }
 }
 
-fn create_initial_sections(section_names: &[String], naming: &SectionNamingMode) -> Vec<ManuscriptSection> {
+fn create_initial_sections(
+    section_names: &[String],
+    naming: &SectionNamingMode,
+) -> Vec<ManuscriptSection> {
     let timestamp = now_iso();
     let mut existing = vec![];
     section_names
@@ -542,14 +645,23 @@ fn scan_existing_section_files(project: &ProjectConfig) -> Result<Vec<Manuscript
         .enumerate()
         .map(|(index, entry)| {
             let path = entry.path();
-            let filename = path.file_name().and_then(|value| value.to_str()).unwrap_or("section.md").to_string();
+            let filename = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("section.md")
+                .to_string();
             let content = fs::read_to_string(&path).unwrap_or_default();
             let title = content
                 .lines()
                 .find_map(|line| line.strip_prefix("## ").or_else(|| line.strip_prefix("# ")))
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| filename.trim_end_matches(".md").replace('_', " ").replace('-', " "));
+                .unwrap_or_else(|| {
+                    filename
+                        .trim_end_matches(".md")
+                        .replace('_', " ")
+                        .replace('-', " ")
+                });
             Ok(ManuscriptSection {
                 id: format!("section_{}", Uuid::new_v4()),
                 filename: filename.clone(),
@@ -587,10 +699,15 @@ fn ensure_structure(project: &ProjectConfig) -> Result<(), String> {
     }
     fs::create_dir_all(root.join("logs")).map_err(|err| err.to_string())?;
     let raw_project = serde_json::to_string_pretty(project).map_err(|err| err.to_string())?;
-    fs::write(project_manifest_path(&root), raw_project.as_bytes()).map_err(|err| err.to_string())?;
-    fs::write(legacy_project_manifest_path(&root), raw_project.as_bytes()).map_err(|err| err.to_string())?;
+    fs::write(project_manifest_path(&root), raw_project.as_bytes())
+        .map_err(|err| err.to_string())?;
+    fs::write(legacy_project_manifest_path(&root), raw_project.as_bytes())
+        .map_err(|err| err.to_string())?;
     write_if_missing(&root.join("manuscript/paper.docx"), &[])?;
-    write_if_missing(&root.join("manuscript/main.tex"), basic_latex_template().as_bytes())?;
+    write_if_missing(
+        &root.join("manuscript/main.tex"),
+        basic_latex_template().as_bytes(),
+    )?;
     write_if_missing(&root.join("references/references.bib"), b"")?;
     write_if_missing(&root.join("templates/word_template.docx"), &[])?;
     write_if_missing(&root.join("ai/claims.json"), b"[]")?;
@@ -691,21 +808,48 @@ fn save_settings(settings: AppSettings) -> Result<AppSettings, String> {
 #[tauri::command]
 fn create_project(input: ProjectCreateInput) -> Result<ProjectConfig, String> {
     let settings = read_settings()?;
+    let title = if input.title.trim().is_empty() {
+        default_project_title()
+    } else {
+        input.title.trim().to_string()
+    };
+    let author = input.author.trim().to_string();
+    let authors = if author.is_empty() {
+        vec![]
+    } else {
+        author
+            .split(',')
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty())
+            .collect()
+    };
+    let target_journal = if input.target_journal.trim().is_empty() {
+        default_target_journal()
+    } else {
+        input.target_journal.trim().to_string()
+    };
     let workspace_root = input
         .workspace_root
         .clone()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(settings.workspace_root);
     let workspace_path = PathBuf::from(workspace_root);
-    let root_path = workspace_path.join(safe_folder_name(&input.title));
+    let root_path = workspace_path.join(safe_folder_name(&title));
     let timestamp = now_iso();
     let citation_backend = citation_backend(&input.manuscript_mode);
     let sections = create_initial_sections(&input.section_names, &input.section_naming);
     let project = ProjectConfig {
         id: format!("project_{}", Uuid::new_v4()),
-        title: if input.title.trim().is_empty() { "Untitled Paper".to_string() } else { input.title.trim().to_string() },
-        author: input.author.trim().to_string(),
-        target_journal: input.target_journal.trim().to_string(),
+        title,
+        author,
+        authors,
+        target_journal,
+        citation_style: input
+            .citation_style
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(settings.default_citation_style),
+        export_mode: input.export_mode.unwrap_or(settings.default_export_mode),
         manuscript_mode: input.manuscript_mode,
         root_path: root_path.to_string_lossy().to_string(),
         created_at: timestamp.clone(),
@@ -749,7 +893,10 @@ fn import_project_folder(root_path: String) -> Result<ProjectConfig, String> {
             id: format!("project_{}", Uuid::new_v4()),
             title,
             author: String::new(),
-            target_journal: String::new(),
+            authors: vec![],
+            target_journal: default_target_journal(),
+            citation_style: default_citation_style(),
+            export_mode: ManuscriptMode::Markdown,
             manuscript_mode: ManuscriptMode::Word,
             root_path: root.to_string_lossy().to_string(),
             created_at: timestamp.clone(),
@@ -758,6 +905,7 @@ fn import_project_folder(root_path: String) -> Result<ProjectConfig, String> {
             manuscript: default_manuscript_manifest(),
         }
     };
+    project = normalize_project(project);
     project.root_path = root.to_string_lossy().to_string();
     if project.id.trim().is_empty() {
         project.id = format!("project_{}", Uuid::new_v4());
@@ -787,16 +935,84 @@ fn read_project_config(project_id: String) -> Result<ProjectConfig, String> {
 
 #[tauri::command]
 fn update_project_config(project: ProjectConfig) -> Result<ProjectConfig, String> {
+    let project = normalize_project(project);
     let mut projects = read_registry()?;
     projects = projects
         .into_iter()
-        .map(|item| if item.id == project.id { project.clone() } else { item })
+        .map(|item| {
+            if item.id == project.id {
+                project.clone()
+            } else {
+                item
+            }
+        })
         .collect();
     write_registry(&projects)?;
     let root = PathBuf::from(&project.root_path);
     write_json(&project_manifest_path(&root), &project)?;
     write_json(&legacy_project_manifest_path(&root), &project)?;
     Ok(project)
+}
+
+#[tauri::command]
+fn update_project_metadata(
+    project_id: String,
+    partial: ProjectMetadataPatch,
+) -> Result<ProjectConfig, String> {
+    let mut project = project_by_id(&project_id)?;
+    if let Some(title) = partial.title {
+        project.title = if title.trim().is_empty() {
+            default_project_title()
+        } else {
+            title.trim().to_string()
+        };
+    }
+    if let Some(author) = partial.author {
+        project.author = author.trim().to_string();
+        if partial.authors.is_none() {
+            project.authors = if project.author.is_empty() {
+                vec![]
+            } else {
+                project
+                    .author
+                    .split(',')
+                    .map(|item| item.trim().to_string())
+                    .filter(|item| !item.is_empty())
+                    .collect()
+            };
+        }
+    }
+    if let Some(authors) = partial.authors {
+        project.authors = authors
+            .into_iter()
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty())
+            .collect();
+        project.author = project.authors.join(", ");
+    }
+    if let Some(target_journal) = partial.target_journal {
+        project.target_journal = if target_journal.trim().is_empty() {
+            default_target_journal()
+        } else {
+            target_journal.trim().to_string()
+        };
+    }
+    if let Some(mode) = partial.manuscript_mode {
+        project.manuscript_mode = mode;
+        project.citation_backend = citation_backend(&project.manuscript_mode);
+    }
+    if let Some(citation_style) = partial.citation_style {
+        project.citation_style = if citation_style.trim().is_empty() {
+            default_citation_style()
+        } else {
+            citation_style.trim().to_string()
+        };
+    }
+    if let Some(export_mode) = partial.export_mode {
+        project.export_mode = export_mode;
+    }
+    project.updated_at = now_iso();
+    update_project_config(project)
 }
 
 #[tauri::command]
@@ -809,7 +1025,10 @@ fn ensure_project_structure(project_id: String) -> Result<bool, String> {
 #[tauri::command]
 fn delete_project(project_id: String, delete_files: bool) -> Result<bool, String> {
     let mut projects = read_registry()?;
-    let project = projects.iter().find(|project| project.id == project_id).cloned();
+    let project = projects
+        .iter()
+        .find(|project| project.id == project_id)
+        .cloned();
     projects.retain(|project| project.id != project_id);
     write_registry(&projects)?;
     if delete_files {
@@ -854,7 +1073,12 @@ fn list_sections(project_id: String) -> Result<Vec<ManuscriptSection>, String> {
             return Ok(scanned);
         }
     }
-    project.manuscript.sections.iter().map(|section| section_from_manifest(&project, section)).collect()
+    project
+        .manuscript
+        .sections
+        .iter()
+        .map(|section| section_from_manifest(&project, section))
+        .collect()
 }
 
 #[tauri::command]
@@ -866,7 +1090,10 @@ fn read_section(project_id: String, filename: String) -> Result<ManuscriptSectio
 }
 
 #[tauri::command]
-fn save_section(project_id: String, section: ManuscriptSection) -> Result<ManuscriptSection, String> {
+fn save_section(
+    project_id: String,
+    section: ManuscriptSection,
+) -> Result<ManuscriptSection, String> {
     let mut project = project_by_id(&project_id)?;
     let mut saved = section;
     saved.updated_at = now_iso();
@@ -887,7 +1114,10 @@ fn save_section(project_id: String, section: ManuscriptSection) -> Result<Manusc
 }
 
 #[tauri::command]
-fn create_section(project_id: String, input: SectionCreateInput) -> Result<ManuscriptSection, String> {
+fn create_section(
+    project_id: String,
+    input: SectionCreateInput,
+) -> Result<ManuscriptSection, String> {
     let mut project = project_by_id(&project_id)?;
     let title = input.title.trim();
     if title.is_empty() {
@@ -899,9 +1129,19 @@ fn create_section(project_id: String, input: SectionCreateInput) -> Result<Manus
         .manuscript
         .sections
         .iter()
-        .filter_map(|section| PathBuf::from(&section.path).file_name().and_then(|value| value.to_str()).map(|value| value.to_string()))
+        .filter_map(|section| {
+            PathBuf::from(&section.path)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(|value| value.to_string())
+        })
         .collect::<Vec<_>>();
-    let filename = make_section_filename(title, order, &project.manuscript.section_naming, &mut existing);
+    let filename = make_section_filename(
+        title,
+        order,
+        &project.manuscript.section_naming,
+        &mut existing,
+    );
     let timestamp = now_iso();
     let section = ManuscriptSection {
         id: format!("section_{}", Uuid::new_v4()),
@@ -915,7 +1155,10 @@ fn create_section(project_id: String, input: SectionCreateInput) -> Result<Manus
         created_at: timestamp.clone(),
     };
     fs::write(root.join(&section.path), &section.content).map_err(|err| err.to_string())?;
-    project.manuscript.sections.push(manifest_from_section(&section));
+    project
+        .manuscript
+        .sections
+        .push(manifest_from_section(&section));
     update_project_config(project.clone())?;
     append_project_activity(
         &project,
@@ -927,7 +1170,10 @@ fn create_section(project_id: String, input: SectionCreateInput) -> Result<Manus
 }
 
 #[tauri::command]
-fn rename_section(project_id: String, input: SectionRenameInput) -> Result<ManuscriptSection, String> {
+fn rename_section(
+    project_id: String,
+    input: SectionRenameInput,
+) -> Result<ManuscriptSection, String> {
     let mut project = project_by_id(&project_id)?;
     let title = input.title.trim();
     if title.is_empty() {
@@ -947,7 +1193,10 @@ fn rename_section(project_id: String, input: SectionRenameInput) -> Result<Manus
     append_project_activity(
         &project,
         ProjectActivityType::SectionRenamed,
-        format!("Renamed section: {}. File path kept: {}", manifest.title, manifest.path),
+        format!(
+            "Renamed section: {}. File path kept: {}",
+            manifest.title, manifest.path
+        ),
         Some(manifest.id.clone()),
     )?;
     section_from_manifest(&project, &manifest)
@@ -967,11 +1216,19 @@ fn list_project_tree(_project_id: String) -> Result<Vec<String>, String> {
 }
 
 fn bib_field(body: &str, field: &str) -> String {
-    let pattern = format!(r#"(?is){}\s*=\s*(?:\{{([^{{}}]*(?:\{{[^{{}}]*\}}[^{{}}]*)*)\}}|"([^"]*)")"#, field);
+    let pattern = format!(
+        r#"(?is){}\s*=\s*(?:\{{([^{{}}]*(?:\{{[^{{}}]*\}}[^{{}}]*)*)\}}|"([^"]*)")"#,
+        field
+    );
     Regex::new(&pattern)
         .ok()
         .and_then(|re| re.captures(body))
-        .and_then(|captures| captures.get(1).or_else(|| captures.get(2)).map(|m| m.as_str().to_string()))
+        .and_then(|captures| {
+            captures
+                .get(1)
+                .or_else(|| captures.get(2))
+                .map(|m| m.as_str().to_string())
+        })
         .unwrap_or_default()
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -980,10 +1237,16 @@ fn bib_field(body: &str, field: &str) -> String {
 
 #[tauri::command]
 fn parse_bibtex(bibtex: String) -> Result<Vec<ReferenceItem>, String> {
-    let entry_re = Regex::new(r"(?is)@\w+\s*\{\s*([^,\s]+)\s*,(.*?)(?=\n@\w+\s*\{|$)").map_err(|err| err.to_string())?;
+    let entry_re = Regex::new(r"(?is)@\w+\s*\{\s*([^,\s]+)\s*,(.*?)(?=\n@\w+\s*\{|$)")
+        .map_err(|err| err.to_string())?;
     let mut refs = vec![];
     for capture in entry_re.captures_iter(&bibtex) {
-        let citekey = capture.get(1).map(|m| m.as_str()).unwrap_or("").trim().to_string();
+        let citekey = capture
+            .get(1)
+            .map(|m| m.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
         let body = capture.get(2).map(|m| m.as_str()).unwrap_or("");
         let authors = bib_field(body, "author")
             .split(" and ")
@@ -994,18 +1257,30 @@ fn parse_bibtex(bibtex: String) -> Result<Vec<ReferenceItem>, String> {
             citekey,
             title: {
                 let title = bib_field(body, "title");
-                if title.is_empty() { "(untitled)".to_string() } else { title }
+                if title.is_empty() {
+                    "(untitled)".to_string()
+                } else {
+                    title
+                }
             },
             authors,
             year: bib_field(body, "year"),
             journal: {
                 let journal = bib_field(body, "journal");
-                if journal.is_empty() { bib_field(body, "booktitle") } else { journal }
+                if journal.is_empty() {
+                    bib_field(body, "booktitle")
+                } else {
+                    journal
+                }
             },
             doi: bib_field(body, "doi"),
             abstract_text: {
                 let value = bib_field(body, "abstract");
-                if value.is_empty() { None } else { Some(value) }
+                if value.is_empty() {
+                    None
+                } else {
+                    Some(value)
+                }
             },
             zotero_item_key: None,
             library_id: None,
@@ -1018,9 +1293,16 @@ fn parse_bibtex(bibtex: String) -> Result<Vec<ReferenceItem>, String> {
 #[tauri::command]
 fn save_bibtex(project_id: String, bibtex: String) -> Result<Vec<ReferenceItem>, String> {
     let project = project_by_id(&project_id)?;
-    fs::write(PathBuf::from(&project.root_path).join("references/references.bib"), &bibtex).map_err(|err| err.to_string())?;
+    fs::write(
+        PathBuf::from(&project.root_path).join("references/references.bib"),
+        &bibtex,
+    )
+    .map_err(|err| err.to_string())?;
     let refs = parse_bibtex(bibtex)?;
-    write_json(&PathBuf::from(&project.root_path).join("references/references.json"), &refs)?;
+    write_json(
+        &PathBuf::from(&project.root_path).join("references/references.json"),
+        &refs,
+    )?;
     Ok(refs)
 }
 
@@ -1043,7 +1325,8 @@ fn scan_citation_tasks(project_id: String) -> Result<Vec<CitationTask>, String> 
     let project = project_by_id(&project_id)?;
     let task_path = PathBuf::from(&project.root_path).join("references/citation_tasks.json");
     let previous: Vec<CitationTask> = read_json_vec(&task_path)?;
-    let placeholder_re = Regex::new(r"\[CITE:\s*([A-Za-z0-9_:.+-]+)\s*\]").map_err(|err| err.to_string())?;
+    let placeholder_re =
+        Regex::new(r"\[CITE:\s*([A-Za-z0-9_:.+-]+)\s*\]").map_err(|err| err.to_string())?;
     let mut tasks = vec![];
     for section in sections {
         for capture in placeholder_re.captures_iter(&section.content) {
@@ -1070,7 +1353,11 @@ fn scan_citation_tasks(project_id: String) -> Result<Vec<CitationTask>, String> 
 }
 
 #[tauri::command]
-fn update_citation_task_status(project_id: String, task_id: String, status: CitationStatus) -> Result<Vec<CitationTask>, String> {
+fn update_citation_task_status(
+    project_id: String,
+    task_id: String,
+    status: CitationStatus,
+) -> Result<Vec<CitationTask>, String> {
     let project = project_by_id(&project_id)?;
     let task_path = PathBuf::from(&project.root_path).join("references/citation_tasks.json");
     let mut tasks: Vec<CitationTask> = read_json_vec(&task_path)?;
@@ -1084,7 +1371,10 @@ fn update_citation_task_status(project_id: String, task_id: String, status: Cita
 }
 
 #[tauri::command]
-fn add_literature_item(project_id: String, item: LiteratureItemInput) -> Result<LiteratureItem, String> {
+fn add_literature_item(
+    project_id: String,
+    item: LiteratureItemInput,
+) -> Result<LiteratureItem, String> {
     let project = project_by_id(&project_id)?;
     let path = PathBuf::from(&project.root_path).join("literature/literature.json");
     let mut items: Vec<LiteratureItem> = read_json_vec(&path)?;
@@ -1109,7 +1399,10 @@ fn list_literature(project_id: String) -> Result<Vec<LiteratureItem>, String> {
 }
 
 #[tauri::command]
-fn search_literature_mock(project_id: String, query: String) -> Result<Vec<LiteratureItem>, String> {
+fn search_literature_mock(
+    project_id: String,
+    query: String,
+) -> Result<Vec<LiteratureItem>, String> {
     let items = list_literature(project_id)?;
     let q = query.to_lowercase();
     if q.trim().is_empty() {
@@ -1118,9 +1411,14 @@ fn search_literature_mock(project_id: String, query: String) -> Result<Vec<Liter
     Ok(items
         .into_iter()
         .filter(|item| {
-            [item.filename.as_str(), item.path.as_str(), item.notes.as_str(), item.linked_citekey.as_deref().unwrap_or("")]
-                .iter()
-                .any(|value| value.to_lowercase().contains(&q))
+            [
+                item.filename.as_str(),
+                item.path.as_str(),
+                item.notes.as_str(),
+                item.linked_citekey.as_deref().unwrap_or(""),
+            ]
+            .iter()
+            .any(|value| value.to_lowercase().contains(&q))
         })
         .collect())
 }
@@ -1134,7 +1432,10 @@ fn list_claims(project_id: String) -> Result<Vec<ClaimRecord>, String> {
 #[tauri::command]
 fn save_claims(project_id: String, claims: Vec<ClaimRecord>) -> Result<Vec<ClaimRecord>, String> {
     let project = project_by_id(&project_id)?;
-    write_json(&PathBuf::from(&project.root_path).join("ai/claims.json"), &claims)?;
+    write_json(
+        &PathBuf::from(&project.root_path).join("ai/claims.json"),
+        &claims,
+    )?;
     Ok(claims)
 }
 
@@ -1147,7 +1448,11 @@ fn add_claim(project_id: String, claim: ClaimRecord) -> Result<ClaimRecord, Stri
 }
 
 #[tauri::command]
-fn update_claim_status(project_id: String, claim_id: String, status: ClaimStatus) -> Result<Vec<ClaimRecord>, String> {
+fn update_claim_status(
+    project_id: String,
+    claim_id: String,
+    status: ClaimStatus,
+) -> Result<Vec<ClaimRecord>, String> {
     let mut claims = list_claims(project_id.clone())?;
     for claim in &mut claims {
         if claim.id == claim_id {
@@ -1187,12 +1492,17 @@ fn generate_ai_proposal(
 }
 
 #[tauri::command]
-fn apply_ai_proposal(project_id: String, proposal: AiProposal, section: ManuscriptSection) -> Result<ManuscriptSection, String> {
+fn apply_ai_proposal(
+    project_id: String,
+    proposal: AiProposal,
+    section: ManuscriptSection,
+) -> Result<ManuscriptSection, String> {
     let mut next = section;
     next.content = if proposal.original_text.trim().is_empty() {
         format!("{}\n\n{}\n", next.content.trim(), proposal.proposed_text)
     } else {
-        next.content.replace(&proposal.original_text, &proposal.proposed_text)
+        next.content
+            .replace(&proposal.original_text, &proposal.proposed_text)
     };
     save_section(project_id, next)
 }
@@ -1208,24 +1518,256 @@ fn merged_sections(project_id: &str) -> Result<String, String> {
 }
 
 fn convert_citations_for_mode(markdown: &str, mode: &ManuscriptMode) -> Result<String, String> {
-    let word_re = Regex::new(r"\[CITE:\s*([A-Za-z0-9_:.+-]+)\s*\]").map_err(|err| err.to_string())?;
+    let word_re =
+        Regex::new(r"\[CITE:\s*([A-Za-z0-9_:.+-]+)\s*\]").map_err(|err| err.to_string())?;
     let pandoc_re = Regex::new(r"\[@([A-Za-z0-9_:.+-]+)\]").map_err(|err| err.to_string())?;
     let latex_re = Regex::new(r"\\cite\{([^}]+)\}").map_err(|err| err.to_string())?;
     let converted = match mode {
         ManuscriptMode::Word => {
-            let step = latex_re.replace_all(markdown, |captures: &regex::Captures| format!("[CITE: {}]", captures[1].trim()));
-            pandoc_re.replace_all(&step, |captures: &regex::Captures| format!("[CITE: {}]", captures[1].trim())).to_string()
+            let step = latex_re.replace_all(markdown, |captures: &regex::Captures| {
+                format!("[CITE: {}]", captures[1].trim())
+            });
+            pandoc_re
+                .replace_all(&step, |captures: &regex::Captures| {
+                    format!("[CITE: {}]", captures[1].trim())
+                })
+                .to_string()
         }
         ManuscriptMode::Latex => {
-            let step = word_re.replace_all(markdown, |captures: &regex::Captures| format!("\\cite{{{}}}", captures[1].trim()));
-            pandoc_re.replace_all(&step, |captures: &regex::Captures| format!("\\cite{{{}}}", captures[1].trim())).to_string()
+            let step = word_re.replace_all(markdown, |captures: &regex::Captures| {
+                format!("\\cite{{{}}}", captures[1].trim())
+            });
+            pandoc_re
+                .replace_all(&step, |captures: &regex::Captures| {
+                    format!("\\cite{{{}}}", captures[1].trim())
+                })
+                .to_string()
         }
         ManuscriptMode::Markdown => {
-            let step = word_re.replace_all(markdown, |captures: &regex::Captures| format!("[@{}]", captures[1].trim()));
-            latex_re.replace_all(&step, |captures: &regex::Captures| format!("[@{}]", captures[1].trim())).to_string()
+            let step = word_re.replace_all(markdown, |captures: &regex::Captures| {
+                format!("[@{}]", captures[1].trim())
+            });
+            latex_re
+                .replace_all(&step, |captures: &regex::Captures| {
+                    format!("[@{}]", captures[1].trim())
+                })
+                .to_string()
         }
     };
     Ok(converted)
+}
+
+fn copy_dir_recursive(
+    src: &Path,
+    dst: &Path,
+    files: &mut Vec<String>,
+    prefix: &str,
+) -> Result<(), String> {
+    if !src.exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(dst).map_err(|err| err.to_string())?;
+    for entry in fs::read_dir(src).map_err(|err| err.to_string())? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let src_path = entry.path();
+        let name = entry.file_name();
+        let dst_path = dst.join(&name);
+        let rel = format!("{}/{}", prefix, name.to_string_lossy()).replace('\\', "/");
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path, files, &rel)?;
+        } else {
+            fs::copy(&src_path, &dst_path).map_err(|err| err.to_string())?;
+            files.push(rel);
+        }
+    }
+    Ok(())
+}
+
+fn copy_optional_file(
+    src: &Path,
+    dst: &Path,
+    rel: &str,
+    files: &mut Vec<String>,
+    skipped: &mut Vec<serde_json::Value>,
+) -> Result<(), String> {
+    if src.exists() {
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        }
+        fs::copy(src, dst).map_err(|err| err.to_string())?;
+        files.push(rel.to_string());
+    } else {
+        skipped.push(serde_json::json!({ "path": rel, "reason": "File does not exist" }));
+    }
+    Ok(())
+}
+
+fn markdown_package_body(project_id: &str) -> Result<(String, Vec<String>), String> {
+    let mut sections = list_sections(project_id.to_string())?;
+    sections.sort_by_key(|section| section.order);
+    if sections.is_empty() {
+        return Ok((
+            "<!-- Empty manuscript exported by PaperForge -->\n".to_string(),
+            vec![],
+        ));
+    }
+    let h1_re = Regex::new(r"(?m)^#\s+").map_err(|err| err.to_string())?;
+    let mut warnings = vec![];
+    let mut chunks = vec![];
+    for section in sections {
+        let content =
+            convert_citations_for_mode(section.content.trim(), &ManuscriptMode::Markdown)?;
+        if h1_re.is_match(&content) {
+            warnings.push(format!(
+                "Section '{}' already contains a level-one heading.",
+                section.title
+            ));
+        }
+        chunks.push(format!("# {}\n\n{}", section.title, content));
+    }
+    Ok((chunks.join("\n\n"), warnings))
+}
+
+#[tauri::command]
+fn export_markdown_package(project_id: String) -> Result<ExportJob, String> {
+    let project = normalize_project(project_by_id(&project_id)?);
+    let root = PathBuf::from(&project.root_path);
+    let stamp = Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    let output = root
+        .join("outputs")
+        .join(format!("paperforge-export-{}", stamp));
+    fs::create_dir_all(&output).map_err(|err| err.to_string())?;
+
+    let mut files: Vec<String> = vec![];
+    let mut skipped: Vec<serde_json::Value> = vec![];
+    let mut warnings: Vec<String> = vec![];
+
+    write_json(&output.join("manifest.json"), &project)?;
+    files.push("manifest.json".to_string());
+
+    let (body, body_warnings) = markdown_package_body(&project_id)?;
+    warnings.extend(body_warnings);
+    fs::write(output.join("manuscript.md"), body).map_err(|err| err.to_string())?;
+    files.push("manuscript.md".to_string());
+
+    fs::create_dir_all(output.join("sections")).map_err(|err| err.to_string())?;
+    let mut sections = list_sections(project_id.clone())?;
+    sections.sort_by_key(|section| section.order);
+    for section in sections {
+        let src = root.join(&section.path);
+        let dst = output.join("sections").join(&section.filename);
+        let rel = format!("sections/{}", section.filename);
+        copy_optional_file(&src, &dst, &rel, &mut files, &mut skipped)?;
+    }
+
+    let bib_src = {
+        let library = root.join("references/library.bib");
+        if library.exists() {
+            library
+        } else {
+            root.join("references/references.bib")
+        }
+    };
+    copy_optional_file(
+        &bib_src,
+        &output.join("references/library.bib"),
+        "references/library.bib",
+        &mut files,
+        &mut skipped,
+    )?;
+    copy_optional_file(
+        &root.join("references/references.json"),
+        &output.join("references/references.json"),
+        "references/references.json",
+        &mut files,
+        &mut skipped,
+    )?;
+    copy_optional_file(
+        &root.join("references/citation_tasks.json"),
+        &output.join("references/citation-queue.json"),
+        "references/citation-queue.json",
+        &mut files,
+        &mut skipped,
+    )?;
+    let papers_src = {
+        let papers = root.join("literature/papers.json");
+        if papers.exists() {
+            papers
+        } else {
+            root.join("literature/literature.json")
+        }
+    };
+    copy_optional_file(
+        &papers_src,
+        &output.join("literature/papers.json"),
+        "literature/papers.json",
+        &mut files,
+        &mut skipped,
+    )?;
+    copy_dir_recursive(
+        &root.join("figures"),
+        &output.join("figures"),
+        &mut files,
+        "figures",
+    )?;
+    copy_dir_recursive(&root.join("data"), &output.join("data"), &mut files, "data")?;
+    copy_optional_file(
+        &root.join("ai/claims.json"),
+        &output.join("claims/claims.json"),
+        "claims/claims.json",
+        &mut files,
+        &mut skipped,
+    )?;
+
+    let report = serde_json::json!({
+        "exportedAt": now_iso(),
+        "projectTitle": project.title,
+        "mode": "markdown",
+        "outputDir": output.to_string_lossy(),
+        "files": files,
+        "skipped": skipped,
+        "warnings": warnings,
+    });
+    write_json(&output.join("export-report.json"), &report)?;
+
+    Ok(ExportJob {
+        id: format!("export_{}", Uuid::new_v4()),
+        project_id,
+        mode: ManuscriptMode::Markdown,
+        status: ExportStatus::Success,
+        output_path: output.to_string_lossy().to_string(),
+        logs: vec![
+            "Markdown package exported.".to_string(),
+            "Includes manifest.json, manuscript.md, sections/, export-report.json.".to_string(),
+        ],
+        created_at: now_iso(),
+    })
+}
+
+#[tauri::command]
+fn export_word_draft_placeholder(project_id: String) -> Result<ExportJob, String> {
+    Ok(ExportJob {
+        id: format!("export_{}", Uuid::new_v4()),
+        project_id,
+        mode: ManuscriptMode::Word,
+        status: ExportStatus::Pending,
+        output_path: String::new(),
+        logs: vec!["Coming soon. Recommended route: Markdown/Pandoc to DOCX.".to_string()],
+        created_at: now_iso(),
+    })
+}
+
+#[tauri::command]
+fn export_latex_placeholder(project_id: String) -> Result<ExportJob, String> {
+    Ok(ExportJob {
+        id: format!("export_{}", Uuid::new_v4()),
+        project_id,
+        mode: ManuscriptMode::Latex,
+        status: ExportStatus::Pending,
+        output_path: String::new(),
+        logs: vec!["Coming soon. Current stable export is Markdown package.".to_string()],
+        created_at: now_iso(),
+    })
 }
 
 #[tauri::command]
@@ -1233,7 +1775,11 @@ fn export_word_draft(project_id: String) -> Result<ExportJob, String> {
     let project = project_by_id(&project_id)?;
     let root = PathBuf::from(&project.root_path);
     let output = root.join("outputs/combined_word_draft.md");
-    fs::write(&output, convert_citations_for_mode(&merged_sections(&project_id)?, &ManuscriptMode::Word)?).map_err(|err| err.to_string())?;
+    fs::write(
+        &output,
+        convert_citations_for_mode(&merged_sections(&project_id)?, &ManuscriptMode::Word)?,
+    )
+    .map_err(|err| err.to_string())?;
     let tasks = scan_citation_tasks(project_id.clone())?;
     write_json(&root.join("outputs/citation_tasks.json"), &tasks)?;
     Ok(ExportJob {
@@ -1270,7 +1816,10 @@ fn export_latex(project_id: String) -> Result<ExportJob, String> {
         mode: ManuscriptMode::Latex,
         status: ExportStatus::Success,
         output_path: output.to_string_lossy().to_string(),
-        logs: vec!["LaTeX main.tex generated.".to_string(), "references.bib copied when available.".to_string()],
+        logs: vec![
+            "LaTeX main.tex generated.".to_string(),
+            "references.bib copied when available.".to_string(),
+        ],
         created_at: now_iso(),
     })
 }
@@ -1280,7 +1829,11 @@ fn export_markdown_pandoc(project_id: String) -> Result<ExportJob, String> {
     let project = project_by_id(&project_id)?;
     let root = PathBuf::from(&project.root_path);
     let output = root.join("outputs/combined.md");
-    fs::write(&output, convert_citations_for_mode(&merged_sections(&project_id)?, &ManuscriptMode::Markdown)?).map_err(|err| err.to_string())?;
+    fs::write(
+        &output,
+        convert_citations_for_mode(&merged_sections(&project_id)?, &ManuscriptMode::Markdown)?,
+    )
+    .map_err(|err| err.to_string())?;
     let command = "pandoc combined.md --bibliography ../references/references.bib --csl ../references/csl/style.csl -o paper.docx";
     fs::write(root.join("outputs/pandoc_command.txt"), command).map_err(|err| err.to_string())?;
     Ok(ExportJob {
@@ -1289,7 +1842,10 @@ fn export_markdown_pandoc(project_id: String) -> Result<ExportJob, String> {
         mode: ManuscriptMode::Markdown,
         status: ExportStatus::Success,
         output_path: output.to_string_lossy().to_string(),
-        logs: vec!["combined.md generated.".to_string(), format!("Pandoc command: {}", command)],
+        logs: vec![
+            "combined.md generated.".to_string(),
+            format!("Pandoc command: {}", command),
+        ],
         created_at: now_iso(),
     })
 }
@@ -1332,6 +1888,7 @@ pub fn run() {
             open_project,
             read_project_config,
             update_project_config,
+            update_project_metadata,
             ensure_project_structure,
             delete_project,
             export_project_manifest,
@@ -1356,11 +1913,13 @@ pub fn run() {
             export_word_draft,
             export_latex,
             export_markdown_pandoc,
+            export_markdown_package,
+            export_word_draft_placeholder,
+            export_latex_placeholder,
             read_settings,
             save_settings,
             generate_ai_proposal,
-            apply_ai_proposal
-            ,
+            apply_ai_proposal,
             read_app_logs,
             append_app_log,
             open_path
@@ -1396,12 +1955,18 @@ mod tests {
         result
     }
 
-    fn create_input(title: &str, naming: SectionNamingMode, names: Vec<&str>) -> ProjectCreateInput {
+    fn create_input(
+        title: &str,
+        naming: SectionNamingMode,
+        names: Vec<&str>,
+    ) -> ProjectCreateInput {
         ProjectCreateInput {
             title: title.to_string(),
             author: "Tester".to_string(),
             target_journal: String::new(),
             manuscript_mode: ManuscriptMode::Word,
+            citation_style: None,
+            export_mode: None,
             workspace_root: Some("workspace".to_string()),
             section_naming: naming,
             section_names: names.into_iter().map(|value| value.to_string()).collect(),
@@ -1411,10 +1976,17 @@ mod tests {
     #[test]
     fn empty_manuscript_creates_no_section_files_and_valid_manifest() {
         with_temp_cwd("empty", |_dir| {
-            let project = create_project(create_input("Empty Paper", SectionNamingMode::Numbered, vec![])).expect("project");
+            let project = create_project(create_input(
+                "Empty Paper",
+                SectionNamingMode::Numbered,
+                vec![],
+            ))
+            .expect("project");
             let root = PathBuf::from(&project.root_path);
             assert!(root.join("manuscript/sections").exists());
-            assert!(list_sections(project.id.clone()).expect("sections").is_empty());
+            assert!(list_sections(project.id.clone())
+                .expect("sections")
+                .is_empty());
             let manifest: ProjectConfig = serde_json::from_str(
                 &fs::read_to_string(root.join("paperforge.project.json")).expect("manifest raw"),
             )
@@ -1433,12 +2005,16 @@ mod tests {
             ))
             .expect("project");
             let sections = list_sections(project.id).expect("sections");
-            assert_eq!(sections.iter().map(|item| item.filename.as_str()).collect::<Vec<_>>(), vec![
-                "01_abstract.md",
-                "02_introduction.md",
-                "03_methods.md",
-            ]);
-            assert!(PathBuf::from(&project.root_path).join("paperforge.project.json").exists());
+            assert_eq!(
+                sections
+                    .iter()
+                    .map(|item| item.filename.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["01_abstract.md", "02_introduction.md", "03_methods.md",]
+            );
+            assert!(PathBuf::from(&project.root_path)
+                .join("paperforge.project.json")
+                .exists());
         });
     }
 
@@ -1461,7 +2037,12 @@ mod tests {
     #[test]
     fn create_and_rename_section_update_manifest_and_activity() {
         with_temp_cwd("activity", |_dir| {
-            let project = create_project(create_input("Activity Paper", SectionNamingMode::Numbered, vec![])).expect("project");
+            let project = create_project(create_input(
+                "Activity Paper",
+                SectionNamingMode::Numbered,
+                vec![],
+            ))
+            .expect("project");
             let section = create_section(
                 project.id.clone(),
                 SectionCreateInput {
@@ -1486,13 +2067,69 @@ mod tests {
             )
             .expect("manifest json");
             assert_eq!(manifest.manuscript.sections[0].title, "Renamed Section");
-            assert_eq!(manifest.manuscript.sections[0].path, "manuscript/sections/01_section.md");
+            assert_eq!(
+                manifest.manuscript.sections[0].path,
+                "manuscript/sections/01_section.md"
+            );
             let activities: Vec<ProjectActivity> = serde_json::from_str(
                 &fs::read_to_string(root.join("logs/activity.json")).expect("activity raw"),
             )
             .expect("activity json");
-            assert!(activities.iter().any(|item| matches!(&item.activity_type, ProjectActivityType::SectionCreated)));
-            assert!(activities.iter().any(|item| matches!(&item.activity_type, ProjectActivityType::SectionRenamed)));
+            assert!(activities
+                .iter()
+                .any(|item| matches!(&item.activity_type, ProjectActivityType::SectionCreated)));
+            assert!(activities
+                .iter()
+                .any(|item| matches!(&item.activity_type, ProjectActivityType::SectionRenamed)));
+        });
+    }
+
+    #[test]
+    fn blank_metadata_gets_safe_defaults() {
+        with_temp_cwd("metadata", |_dir| {
+            let mut input = create_input("", SectionNamingMode::Numbered, vec![]);
+            input.author = String::new();
+            let project = create_project(input).expect("project");
+            assert_eq!(project.title, "Untitled Paper");
+            assert!(project.authors.is_empty());
+            assert_eq!(project.target_journal, "Unspecified Journal");
+            assert_eq!(project.citation_style, "apa");
+            assert!(matches!(project.export_mode, ManuscriptMode::Markdown));
+            let root = PathBuf::from(&project.root_path);
+            let manifest: ProjectConfig = serde_json::from_str(
+                &fs::read_to_string(root.join("paperforge.project.json")).expect("manifest raw"),
+            )
+            .expect("manifest json");
+            assert_eq!(manifest.title, "Untitled Paper");
+            assert_eq!(manifest.target_journal, "Unspecified Journal");
+        });
+    }
+
+    #[test]
+    fn markdown_package_export_writes_report_and_sections() {
+        with_temp_cwd("markdown_export", |_dir| {
+            let project = create_project(create_input(
+                "Export Paper",
+                SectionNamingMode::Numbered,
+                vec!["Introduction", "Methods"],
+            ))
+            .expect("project");
+            fs::write(
+                PathBuf::from(&project.root_path).join("references/references.bib"),
+                "@article{Zhang2023,title={Test}}",
+            )
+            .expect("bib");
+            let job = export_markdown_package(project.id.clone()).expect("export");
+            assert!(matches!(job.status, ExportStatus::Success));
+            let output = PathBuf::from(job.output_path);
+            assert!(output.join("manifest.json").exists());
+            assert!(output.join("manuscript.md").exists());
+            assert!(output.join("sections/01_introduction.md").exists());
+            assert!(output.join("sections/02_methods.md").exists());
+            assert!(output.join("references/library.bib").exists());
+            let report_raw = fs::read_to_string(output.join("export-report.json")).expect("report");
+            assert!(report_raw.contains("manuscript.md"));
+            assert!(!output.join(".git").exists());
         });
     }
 }

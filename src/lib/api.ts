@@ -68,8 +68,9 @@ export const defaultSettings: AppSettings = {
     model: "gpt-4.1-mini"
   },
   defaultCitationStyle: "apa",
-  defaultExportMode: "word",
-  themeMode: "dark"
+  defaultExportMode: "markdown",
+  themeMode: "dark",
+  language: "en"
 };
 
 const emptyState = (): BrowserState => ({
@@ -87,8 +88,17 @@ const emptyState = (): BrowserState => ({
 });
 
 function normalizeProject(project: ProjectConfig): ProjectConfig {
+  const title = project.title?.trim() || "Untitled Paper";
+  const author = project.author?.trim() ?? "";
+  const targetJournal = project.targetJournal?.trim() || "Unspecified Journal";
   return {
     ...project,
+    title,
+    author,
+    authors: project.authors ?? (author ? author.split(",").map((item) => item.trim()).filter(Boolean) : []),
+    targetJournal,
+    citationStyle: project.citationStyle?.trim() || defaultSettings.defaultCitationStyle,
+    exportMode: project.exportMode ?? project.manuscriptMode ?? defaultSettings.defaultExportMode,
     manuscript: project.manuscript ?? {
       sectionNaming: "numbered",
       sections: []
@@ -180,8 +190,17 @@ export const api = {
   createProject(input: ProjectCreateInput) {
     return tauriOrBrowser<ProjectConfig>("create_project", { input }, () => {
       const state = loadState();
-      const rootPath = `${input.workspaceRoot || state.settings.workspaceRoot}/${safeFolderName(input.title)}`;
-      const project = createProjectConfig(input, rootPath);
+      const normalizedInput = {
+        ...input,
+        title: input.title?.trim() || "Untitled Paper",
+        author: input.author?.trim() || "",
+        targetJournal: input.targetJournal?.trim() || "Unspecified Journal",
+        manuscriptMode: input.manuscriptMode || state.settings.defaultManuscriptMode,
+        citationStyle: input.citationStyle || state.settings.defaultCitationStyle || "apa",
+        exportMode: input.exportMode || state.settings.defaultExportMode || "markdown"
+      };
+      const rootPath = `${input.workspaceRoot || state.settings.workspaceRoot}/${safeFolderName(normalizedInput.title)}`;
+      const project = normalizeProject(createProjectConfig(normalizedInput, rootPath));
       state.projects = [project, ...state.projects];
       state.sectionsByProject[project.id] = project.manuscript.sections.map((section) => ({
         id: section.id,
@@ -214,15 +233,18 @@ export const api = {
         {
           title: folderName.replace(/_/g, " "),
           author: "",
-          targetJournal: "",
+          targetJournal: "Unspecified Journal",
           manuscriptMode: state.settings.defaultManuscriptMode,
+          citationStyle: state.settings.defaultCitationStyle,
+          exportMode: state.settings.defaultExportMode,
           workspaceRoot: input.rootPath,
           sectionNaming: "numbered",
           sectionNames: []
         },
         input.rootPath.trim()
       );
-      state.projects = [project, ...state.projects.filter((item) => item.rootPath !== project.rootPath)];
+      const normalizedProject = normalizeProject(project);
+      state.projects = [normalizedProject, ...state.projects.filter((item) => item.rootPath !== project.rootPath)];
       state.sectionsByProject[project.id] = project.manuscript.sections.map((section) => ({
         id: section.id,
         filename: section.path.split("/").pop() ?? `${section.id}.md`,
@@ -242,7 +264,7 @@ export const api = {
       state.proposalsByProject[project.id] = [];
       state.activitiesByProject[project.id] = [];
       saveState(state);
-      return project;
+      return normalizedProject;
     });
   },
 
@@ -303,9 +325,28 @@ export const api = {
   updateProjectConfig(project: ProjectConfig) {
     return tauriOrBrowser<ProjectConfig>("update_project_config", { project }, () => {
       const state = loadState();
-      state.projects = state.projects.map((item) => (item.id === project.id ? normalizeProject(project) : item));
+      const normalized = normalizeProject({ ...project, updatedAt: nowIso() });
+      state.projects = state.projects.map((item) => (item.id === project.id ? normalized : item));
       saveState(state);
-      return normalizeProject(project);
+      return normalized;
+    });
+  },
+
+  updateProjectMetadata(projectId: string, partial: Partial<Pick<ProjectConfig, "title" | "author" | "authors" | "targetJournal" | "manuscriptMode" | "citationStyle" | "exportMode">>) {
+    return tauriOrBrowser<ProjectConfig>("update_project_metadata", { projectId, partial }, () => {
+      const state = loadState();
+      const project = state.projects.find((item) => item.id === projectId);
+      if (!project) throw new Error("Project not found");
+      const next = normalizeProject({
+        ...project,
+        ...partial,
+        title: partial.title !== undefined ? partial.title.trim() || "Untitled Paper" : project.title,
+        targetJournal: partial.targetJournal !== undefined ? partial.targetJournal.trim() || "Unspecified Journal" : project.targetJournal,
+        updatedAt: nowIso()
+      });
+      state.projects = state.projects.map((item) => (item.id === projectId ? next : item));
+      saveState(state);
+      return next;
     });
   },
 
@@ -542,24 +583,48 @@ export const api = {
   },
 
   async exportProject(projectId: string, mode: ManuscriptMode, sections: ManuscriptSection[]) {
-    const command = mode === "word" ? "export_word_draft" : mode === "latex" ? "export_latex" : "export_markdown_pandoc";
-    return tauriOrBrowser<ExportJob>(command, { projectId }, () => ({
+    const command = mode === "markdown" ? "export_markdown_package" : mode === "word" ? "export_word_draft_placeholder" : "export_latex_placeholder";
+    return tauriOrBrowser<ExportJob>(command, { projectId }, () => {
+      if (mode !== "markdown") {
+        return {
+          id: makeId("export"),
+          projectId,
+          mode,
+          status: "pending",
+          outputPath: "",
+          logs: [
+            mode === "word"
+              ? "Coming soon. Recommended route: Markdown/Pandoc to DOCX."
+              : "Coming soon. Current stable export is Markdown package."
+          ],
+          createdAt: nowIso()
+        };
+      }
+      const state = loadState();
+      const project = normalizeProject(state.projects.find((item) => item.id === projectId)!);
+      const stamp = nowIso().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
+      const outputPath = `${project.rootPath}/outputs/paperforge-export-${stamp}`;
+      const markdown = sections.length
+        ? sections
+            .slice()
+            .sort((a, b) => a.order - b.order)
+            .map((section) => `# ${section.title}\n\n${convertCitationsForMode(section.content.trim(), "markdown")}`)
+            .join("\n\n")
+        : "<!-- Empty manuscript exported by PaperForge -->\n";
+      return {
       id: makeId("export"),
       projectId,
       mode,
       status: "success",
-      outputPath: `outputs/${mode === "latex" ? "main.tex" : mode === "word" ? "combined_word_draft.md" : "combined.md"}`,
+        outputPath,
       logs: [
-        "MOCK export completed in browser fallback.",
-        mode === "word"
-          ? "Word draft keeps [CITE: key] placeholders for Zotero Word plugin."
-          : mode === "latex"
-            ? "LaTeX export uses \\cite{key} and references.bib."
-            : "Markdown/Pandoc export uses [@key] syntax.",
-        convertCitationsForMode(mergeSections(sections), mode).slice(0, 80)
+          "Browser fallback preview only. Desktop mode writes the package folder.",
+          "manifest.json, manuscript.md, sections/, references/, literature/, figures/, data/, claims/, export-report.json",
+          markdown.slice(0, 80)
       ],
       createdAt: nowIso()
-    }));
+      };
+    });
   },
 
   validateExport(mode: ManuscriptMode, sections: ManuscriptSection[], references: ReferenceItem[]): ExportValidationWarning[] {

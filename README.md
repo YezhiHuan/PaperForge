@@ -1,6 +1,6 @@
 # PaperForge
 
-Current version: `0.3.0`
+Current version: `0.3.1`
 
 PaperForge is a local-first AI manuscript writing workspace. One paper is one local folder containing drafts, references, literature records, outputs, templates, figures, data, and AI writing history.
 
@@ -9,8 +9,11 @@ PaperForge is an integration layer, not a Word, LaTeX, or Zotero replacement.
 ## Core Features
 
 - Project dashboard with animated project cards and create-project modal.
+- English and Chinese UI language switching from Settings, persisted locally.
 - Project manifest export, import existing project folder flow, and safe project removal from the app list.
 - Paper project generator with manuscript, references, literature, templates, figures, data, AI, and outputs folders.
+- Optional paper title, author, and journal metadata with safe defaults.
+- Editable paper title from the dashboard, IDE header, and Project Info panel.
 - Optional manuscript section initialization: empty by default, template-based, or custom section names.
 - Three-panel research writing IDE: explorer, manuscript editor, assistant/tools.
 - Markdown section editing, preview, save flow, section creation/rename, and citation insertion.
@@ -19,7 +22,8 @@ PaperForge is an integration layer, not a Word, LaTeX, or Zotero replacement.
 - Literature PDF record library with mock search and replaceable embedding status.
 - Mock-first AI assistant with OpenAI-compatible provider settings.
 - Claims list for evidence-based writing groundwork.
-- Word, LaTeX, and Markdown/Pandoc export panels.
+- Markdown package export as the current stable export path.
+- Word and LaTeX export placeholders with staged architecture for future exporters.
 - Export validation warnings and output-folder opening in desktop mode.
 - Persistent app activity logs stored in local app config.
 - Local settings for workspace root, manuscript mode, provider config, citation style, and export mode.
@@ -55,7 +59,13 @@ Lint is not configured in this MVP. Use `npm run typecheck` and `npm run build` 
 
 ## Create Paper Project
 
-Open the app, select **New Project**, then enter title, author, target journal, manuscript mode, and optional workspace root.
+Open the app, select **New Project**, then enter any metadata you want. Title, authors, target journal, citation style, writing mode, export mode, and sections are all optional.
+
+If title, authors, or journal are blank, PaperForge writes safe defaults to `paperforge.project.json`:
+
+- title: `Untitled Paper`
+- authors: `[]`
+- journal: `Unspecified Journal`
 
 Manuscript sections are optional. Default is **Empty manuscript**, so PaperForge creates `manuscript/sections/` but does not force `01_abstract.md`, `02_introduction.md`, or other standard section files.
 
@@ -98,6 +108,8 @@ PaperForge currently does not initialize Git repositories inside paper project f
 
 After project creation, the IDE can add new sections from the project tree or empty manuscript state. Section rename changes the title in `paperforge.project.json`; existing Markdown file paths are kept unless explicit file rename support is added later.
 
+Paper title edits update the current UI, dashboard list, `paperforge.project.json`, and `updatedAt`. PaperForge does not rename the local project folder automatically.
+
 Section structure is persisted in `paperforge.project.json`:
 
 ```json
@@ -115,21 +127,45 @@ Use **Import Existing** on the dashboard and enter a PaperForge project folder p
 
 If `paperforge.project.json` or legacy `project.json` exists, PaperForge registers that project. If no manifest exists, PaperForge creates a minimal project manifest and missing MVP folders without overwriting existing manuscript files.
 
+## Language and Settings
+
+Settings live in the sidebar footer. Select and toggle settings apply immediately and persist locally, including theme, language, default writing mode, citation style, and export mode. Text settings are written through the same settings persistence path and are not stored in paper project manifests.
+
 ## Word Citation Workflow
 
 Word mode uses placeholders such as `[CITE: Zhang2023]`.
 
 PaperForge does not write Zotero Word citation fields. Users should use Zotero Word plugin later to insert final references and bibliography.
 
-Exports keep placeholders and generate `citation_tasks.json` so pending citation work is visible.
+Markdown package export keeps Word placeholders when the manuscript mode uses them. Word `.docx` generation is intentionally staged for a later release.
 
 ## LaTeX Citation Workflow
 
-LaTeX mode inserts `\cite{Zhang2023}` and writes `references.bib`. Export generates `main.tex` using current Markdown sections and a basic template. Word placeholders and Pandoc citations are converted with targeted citation regexes, not broad bracket replacement.
+LaTeX mode inserts `\cite{Zhang2023}` and writes `references.bib`. Full LaTeX project export is intentionally staged for a later release.
 
 ## Markdown / Pandoc Workflow
 
-Markdown mode inserts `[@Zhang2023]`. Export generates `combined.md` and a Pandoc command text for later execution.
+Markdown mode inserts `[@Zhang2023]`. The stable export is **Export Markdown Package**, which creates:
+
+```text
+outputs/
+└─ paperforge-export-YYYYMMDD-HHMMSS/
+   ├─ manifest.json
+   ├─ manuscript.md
+   ├─ sections/
+   ├─ references/
+   ├─ literature/
+   ├─ figures/
+   ├─ data/
+   ├─ claims/
+   └─ export-report.json
+```
+
+Missing optional files are recorded in `export-report.json` instead of failing the export.
+
+Future Word route: Markdown package -> Pandoc -> DOCX, optionally with `reference.docx`. Zotero Word fields should still be inserted in Word through the Zotero plugin; PaperForge keeps `[CITE: key]` placeholders.
+
+Future LaTeX route: generate `main.tex`, section `.tex` files, copy `references.bib`, and copy figures. Markdown-to-LaTeX conversion should use Pandoc or a staged converter, not fragile ad hoc string hacks.
 
 ## Zotero / Better BibTeX
 
@@ -159,7 +195,7 @@ The UI uses a dense research IDE layout:
 - Left: project tree
 - Center: section editor and preview
 - Right: AI, references, citations, literature, export, settings
-- Bottom: compact citation queue, export state, app activity, and recent log chips
+- Sidebar footer: Settings
 - Design/build notes can be written under `logs/`; that folder is ignored by Git.
 
 Motion is restrained: project card entrance, file tree expand/collapse, editor/preview fade, modal overlay/content transitions, AI proposal reveal, loading skeletons, export running dots.
@@ -185,6 +221,15 @@ MVP intentionally omits per-paper Git features:
 - SQLite interface is reserved for later migration.
 
 ## Version History
+
+### 0.3.1
+
+- Added English/Chinese UI switching.
+- Made paper title, author, and journal optional with persisted defaults.
+- Added title editing from dashboard, IDE header, and Project Info.
+- Added Markdown package export and future Word/LaTeX exporter placeholders.
+- Removed the bottom status strip and improved sidebar/dropdown contrast.
+- Settings now apply immediately.
 
 ### 0.3.0
 

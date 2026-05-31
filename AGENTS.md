@@ -31,6 +31,8 @@ Do not commit local workspaces, PDFs, API keys, model caches, vector indexes, or
 - Generated paper projects should not contain Git logic in the MVP.
 - Empty manuscript is a valid project state.
 - Section templates are optional user choices.
+- Empty title, authors, and journal are valid project states.
+- Markdown package export is the primary stable export path.
 
 ## Development Rules
 
@@ -47,6 +49,11 @@ Do not commit local workspaces, PDFs, API keys, model caches, vector indexes, or
 - Do not hard-code default manuscript sections during project creation.
 - Section titles and section file paths must be persisted in paperforge.project.json.
 - Avoid renaming existing section files automatically unless the user explicitly requests that feature.
+- Use i18n keys for UI text where practical.
+- Word/LaTeX exporters should use staged export architecture, not fragile ad hoc hacks.
+- Settings select/toggle changes should apply immediately.
+- Do not reintroduce the bottom activity/export status strip unless explicitly requested.
+- Keep sidebar/dropdown contrast accessible in all themes.
 
 ## Generated Paper Project Rules
 
@@ -93,7 +100,7 @@ The UI should feel like a research writing IDE:
 - Left panel: project explorer
 - Center panel: manuscript editor / preview
 - Right panel: AI assistant / citation tasks / literature search
-- Bottom panel: logs, export status, citation warnings
+- Settings entry: sidebar footer
 
 The UI should feel fluid and alive:
 - Use subtle transitions for panel switching.
