@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use chrono::Utc;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -97,7 +99,7 @@ fn default_project_title() -> String {
 }
 
 fn default_project_version() -> String {
-    "1.0.0".to_string()
+    "1.0.1".to_string()
 }
 
 fn default_target_journal() -> String {
@@ -352,8 +354,9 @@ struct ProjectActivity {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum ThemeMode {
-    Dark,
     Light,
+    Dark,
+    System,
     EyeCare,
 }
 
@@ -369,7 +372,7 @@ fn default_language() -> Language {
 }
 
 fn default_theme_mode() -> ThemeMode {
-    ThemeMode::Dark
+    ThemeMode::Light
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -463,7 +466,7 @@ fn citation_backend(mode: &ManuscriptMode) -> CitationBackend {
 
 fn default_settings() -> AppSettings {
     AppSettings {
-        workspace_root: "PaperForgeWorkspace".to_string(),
+        workspace_root: "workspace".to_string(),
         default_manuscript_mode: ManuscriptMode::Word,
         llm_provider: LlmProviderSettings {
             base_url: "https://api.openai.com/v1".to_string(),
@@ -472,7 +475,7 @@ fn default_settings() -> AppSettings {
         },
         default_citation_style: "apa".to_string(),
         default_export_mode: ManuscriptMode::Markdown,
-        theme_mode: ThemeMode::Dark,
+        theme_mode: ThemeMode::Light,
         language: Language::En,
     }
 }
@@ -480,12 +483,12 @@ fn default_settings() -> AppSettings {
 fn default_workspace_config(existing: Option<WorkspaceConfig>) -> WorkspaceConfig {
     let timestamp = now_iso();
     WorkspaceConfig {
-        version: "1.0.0".to_string(),
+        version: "1.0.1".to_string(),
         workspace_name: existing
             .as_ref()
             .map(|value| value.workspace_name.clone())
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "PaperForge Workspace".to_string()),
+            .unwrap_or_else(|| "workspace".to_string()),
         created_at: existing
             .as_ref()
             .map(|value| value.created_at.clone())
@@ -523,7 +526,7 @@ fn ensure_workspace(root: &Path) -> Result<WorkspaceConfig, String> {
     if !workspace_settings_path(root).exists() {
         let settings = serde_json::json!({
             "language": "en",
-            "theme": "system"
+            "theme": "light"
         });
         write_json(&workspace_settings_path(root), &settings)?;
     }
@@ -534,7 +537,7 @@ fn ensure_workspace(root: &Path) -> Result<WorkspaceConfig, String> {
 #[tauri::command]
 fn init_workspace(root_path: String) -> Result<WorkspaceConfig, String> {
     let root = PathBuf::from(if root_path.trim().is_empty() {
-        "PaperForgeWorkspace".to_string()
+        "workspace".to_string()
     } else {
         root_path.trim().to_string()
     });
@@ -1185,16 +1188,23 @@ fn delete_project(project_id: String, delete_files: bool) -> Result<bool, String
         .iter()
         .find(|project| project.id == project_id)
         .cloned();
-    projects.retain(|project| project.id != project_id);
-    write_registry(&projects)?;
     if delete_files {
-        if let Some(project) = project {
-            let path = PathBuf::from(project.root_path);
-            if path.exists() {
-                fs::remove_dir_all(path).map_err(|err| err.to_string())?;
-            }
+        let Some(project) = project.clone() else {
+            return Err("Paper not found".to_string());
+        };
+        let path = PathBuf::from(&project.root_path);
+        if path.exists() {
+            fs::remove_dir_all(&path).map_err(|err| {
+                format!(
+                    "Could not delete paper folder '{}': {}. Check file permissions or close files opened by another program.",
+                    path.to_string_lossy(),
+                    err
+                )
+            })?;
         }
     }
+    projects.retain(|project| project.id != project_id);
+    write_registry(&projects)?;
     Ok(true)
 }
 
@@ -2369,6 +2379,37 @@ mod tests {
             assert!(PathBuf::from(&project.root_path)
                 .join("paperforge.json")
                 .exists());
+        });
+    }
+
+    #[test]
+    fn deleting_project_removes_actual_paper_folder() {
+        with_temp_cwd("delete_paper", |_dir| {
+            let project = create_project(create_input(
+                "Delete Paper",
+                SectionNamingMode::Numbered,
+                vec!["Draft"],
+            ))
+            .expect("project");
+            let root = PathBuf::from(&project.root_path);
+            assert!(root.join("paperforge.json").exists());
+            assert!(delete_project(project.id.clone(), true).expect("delete"));
+            assert!(!root.exists());
+            assert!(project_by_id(&project.id).is_err());
+        });
+    }
+
+    #[test]
+    fn default_workspace_init_uses_workspace_and_light_settings() {
+        with_temp_cwd("workspace_init", |dir| {
+            let config = init_workspace(String::new()).expect("workspace");
+            assert_eq!(config.version, "1.0.1");
+            assert_eq!(config.workspace_name, "workspace");
+            let root = dir.join("workspace");
+            assert!(root.join("papers").exists());
+            let settings_raw = fs::read_to_string(root.join(".paperforge/settings.json"))
+                .expect("workspace settings");
+            assert!(settings_raw.contains("\"theme\": \"light\""));
         });
     }
 }

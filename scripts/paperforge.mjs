@@ -5,8 +5,8 @@ import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import crypto from "node:crypto";
 
-const VERSION = "1.0.0";
-const DEFAULT_WORKSPACE = "PaperForgeWorkspace";
+const VERSION = "1.0.1";
+const DEFAULT_WORKSPACE = "workspace";
 const PROVIDERS = new Set(["openai-compatible", "openai", "anthropic"]);
 
 const args = process.argv.slice(2);
@@ -72,7 +72,7 @@ function initWorkspace(workspaceRoot = DEFAULT_WORKSPACE) {
   const timestamp = nowIso();
   writeJson(files.workspace, {
     version: VERSION,
-    workspaceName: existing?.workspaceName || "PaperForge Workspace",
+    workspaceName: existing?.workspaceName || "workspace",
     createdAt: existing?.createdAt || timestamp,
     updatedAt: timestamp,
     papersDir: "papers",
@@ -82,7 +82,7 @@ function initWorkspace(workspaceRoot = DEFAULT_WORKSPACE) {
     writeJson(files.models, { defaultModelId: "", models: [] });
   }
   if (!fs.existsSync(files.settings)) {
-    writeJson(files.settings, { language: "en", theme: "system" });
+    writeJson(files.settings, { language: "en", theme: "light" });
   }
   if (!fs.existsSync(files.history)) {
     fs.writeFileSync(files.history, "");

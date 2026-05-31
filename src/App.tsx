@@ -157,7 +157,20 @@ function App() {
   }, []);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = settings.themeMode;
+    const applyTheme = () => {
+      const resolved =
+        settings.themeMode === "system"
+          ? window.matchMedia?.("(prefers-color-scheme: dark)").matches
+            ? "dark"
+            : "light"
+          : settings.themeMode;
+      document.documentElement.dataset.theme = resolved;
+    };
+    applyTheme();
+    if (settings.themeMode !== "system") return;
+    const query = window.matchMedia?.("(prefers-color-scheme: dark)");
+    query?.addEventListener("change", applyTheme);
+    return () => query?.removeEventListener("change", applyTheme);
   }, [settings.themeMode]);
 
   async function selectProject(project: ProjectConfig) {
@@ -207,20 +220,28 @@ function App() {
   }
 
   async function deleteProject(project: ProjectConfig) {
-    const ok = window.confirm(`Remove "${displayTitle(project.title, settings.language)}" from PaperForge project list? Local folder is not deleted.`);
+    const ok = window.confirm(
+      `Delete "${displayTitle(project.title, settings.language)}"?\n\nThis will permanently delete the local paper folder:\n${project.rootPath}\n\nThis cannot be undone.`
+    );
     if (!ok) return;
-    await api.deleteProject(project.id);
-    const nextProjects = await api.listProjects();
-    setProjects(nextProjects);
-    if (activeProject?.id === project.id) {
-      setActiveProject(null);
-      setSections([]);
-      setReferences([]);
-      setCitationTasks([]);
-      setLiterature([]);
-      setClaims([]);
+    try {
+      await api.deleteProject(project.id);
+      const nextProjects = await api.listProjects();
+      setProjects(nextProjects);
+      if (activeProject?.id === project.id) {
+        setActiveProject(null);
+        setSections([]);
+        setReferences([]);
+        setCitationTasks([]);
+        setLiterature([]);
+        setClaims([]);
+      }
+      addLog("warning", `Deleted paper folder: ${project.rootPath}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not delete paper folder. Check file permissions or close files opened by another program.";
+      window.alert(message);
+      addLog("error", message);
     }
-    addLog("warning", `Removed project from app list: ${project.title}. Local files kept.`);
   }
 
   async function exportProjectManifest(project: ProjectConfig) {
@@ -1081,7 +1102,7 @@ function ExportTool(props: Parameters<typeof RightPanel>[0]) {
 }
 
 function SettingsTool(props: Parameters<typeof RightPanel>[0]) {
-  const themeOptions: Array<[ThemeMode, string]> = [["dark", "Dark"], ["light", "Light"], ["eyeCare", "Eye-care"]];
+  const themeOptions: Array<[ThemeMode, string]> = [["light", "Light"], ["dark", "Dark"], ["system", "System"], ["eyeCare", "Eye-care"]];
   return (
     <>
       <h2>{props.t("tools.settings")}</h2>

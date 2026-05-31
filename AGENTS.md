@@ -12,29 +12,34 @@ This repository contains PaperForge source code only.
 
 Generated workspaces, paper projects, PDFs, API keys, model caches, vector indexes, and private manuscript data are user data and must not be committed.
 
-The source repository must ignore `workspace/` and `PaperForgeWorkspace/`.
+The source repository must ignore `workspace/`.
 
 ## Current Release Rules
 
-- Current product version is `1.0.0`.
+- Current product version is `1.0.1`.
 - App name is `PaperForge`.
-- App title must show `PaperForge v1.0.0`.
+- App title must show `PaperForge v1.0.1`.
 - Every source change must update `CHANGELOG.md`.
 - User-facing feature changes must update `README.md`.
-- `npm run tauri dev` must remain runnable after changes.
+- `npm run tauri dev` and `npm run tauri:dev` must remain runnable.
+- `package.json` must keep `npm run tauri:dev`.
 - Do not commit API keys.
 - Do not hard-code user paper content into source.
 - Do not default-create fixed manuscript sections.
 - `paperforge init` initializes only a global workspace and AI model config.
+- `paperforge init` default workspace directory name must be `workspace`.
 - Single-paper directories are created only by New Paper in the app.
 - Git version control is only for PaperForge source, not generated paper projects.
+- Default theme is `light`.
+- Windows release builds should not show a terminal window.
+- User-visible UI must not show `tauri://localhost`, `localhost`, `127.0.0.1`, `Vite`, `dev server`, or similar development-environment text.
 
 ## Workspace Rules
 
 `paperforge init` creates a global workspace:
 
 ```text
-PaperForgeWorkspace/
+workspace/
 ├─ .paperforge/
 │  ├─ workspace.json
 │  ├─ ai-models.json
@@ -43,7 +48,11 @@ PaperForgeWorkspace/
 └─ papers/
 ```
 
-It must not create `manuscript/`, `references/`, `attachments/`, or `exports/` for a paper.
+`workspace.json` default `workspaceName` is `workspace`.
+
+`settings.json` default theme is `light`.
+
+Workspace init must not create `manuscript/`, `references/`, `attachments/`, or `exports/` for a paper.
 
 `ai-models.json` may contain API keys and must stay out of Git.
 
@@ -82,6 +91,8 @@ Section titles and section file paths must be persisted in `paperforge.json`.
 
 Avoid renaming section files automatically unless user explicitly requests file rename support.
 
+Deleting paper/project must delete the actual paper folder. Do not only mutate UI state, localStorage, or app registry.
+
 ## Citation Rules
 
 Word mode:
@@ -98,22 +109,15 @@ Markdown / Pandoc mode:
 
 ## UI Rules
 
-The UI should feel like a research writing IDE:
-
 - Left panel: workspace and project explorer
 - Center panel: manuscript editor / preview
 - Right panel: AI assistant / citation tasks / literature search / export / settings
 - Settings entry: sidebar footer
-
-Keep sidebar/dropdown contrast accessible in all themes.
-
-Settings select/toggle changes apply immediately.
-
-Do not reintroduce the bottom activity/export status strip unless explicitly requested.
-
-Do not add dashboard-level export controls unless explicitly requested; prefer project-internal export panel actions.
-
-Do not include per-paper Git controls in MVP UI.
+- Keep sidebar/dropdown contrast accessible in all themes.
+- Settings select/toggle changes apply immediately.
+- Do not reintroduce the bottom activity/export status strip unless explicitly requested.
+- Do not add dashboard-level export controls unless explicitly requested.
+- Do not include per-paper Git controls in MVP UI.
 
 ## Development Rules
 
@@ -129,14 +133,13 @@ Do not include per-paper Git controls in MVP UI.
 
 ## Commands
 
-Use the package manager already configured in this repo.
-
 Expected checks:
 
 ```bash
 npm install
 npm run typecheck
 npm run build
+npm run tauri:dev
 npm run tauri dev
 npm run tauri build
 ```
@@ -150,7 +153,7 @@ If a command is unavailable in the current environment, document that fact inste
 - Important UI routes render.
 - Workspace init works.
 - Project creation works.
-- Generated paper project structure is correct.
+- Delete paper removes the real paper folder.
 - Generated paper projects contain no `.git`.
 - Word `[CITE: key]` handling works.
 - LaTeX `\cite{key}` generation works.

@@ -1,6 +1,6 @@
 {
   "name": "paperforge",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "bin": {
@@ -11,6 +11,7 @@
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",
+    "tauri:dev": "tauri dev",
     "paperforge:init": "node scripts/paperforge.mjs init",
     "paperforge:model:add": "node scripts/paperforge.mjs model add",
     "paperforge:model:list": "node scripts/paperforge.mjs model list",

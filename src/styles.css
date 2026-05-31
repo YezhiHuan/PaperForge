@@ -3,16 +3,16 @@
 @tailwind utilities;
 
 :root {
-  --bg: #10110f;
-  --panel: #171915;
-  --panel-2: #1f211c;
-  --line: #31352d;
-  --text: #f0eee6;
-  --muted: #a5a092;
-  --accent: #d8ff74;
-  --accent-2: #80d4ff;
-  --danger: #ff7d7d;
-  --ok: #95f0a8;
+  --bg: #f5f3ec;
+  --panel: #fffcf3;
+  --panel-2: #eee9dc;
+  --line: #d6cec0;
+  --text: #1d211a;
+  --muted: #666454;
+  --accent: #415f14;
+  --accent-2: #126d8a;
+  --danger: #a33b3b;
+  --ok: #28733b;
 }
 
 :root[data-theme="light"] {
@@ -26,6 +26,19 @@
   --accent-2: #126d8a;
   --danger: #a33b3b;
   --ok: #28733b;
+}
+
+:root[data-theme="dark"] {
+  --bg: #10110f;
+  --panel: #171915;
+  --panel-2: #1f211c;
+  --line: #31352d;
+  --text: #f0eee6;
+  --muted: #a5a092;
+  --accent: #d8ff74;
+  --accent-2: #80d4ff;
+  --danger: #ff7d7d;
+  --ok: #95f0a8;
 }
 
 :root[data-theme="eyeCare"] {
@@ -421,7 +434,6 @@ details { margin-top: 12px; color: var(--muted); }
 pre { white-space: pre-wrap; background: var(--bg); border: 1px solid var(--line); padding: 10px; border-radius: 7px; max-height: 220px; overflow: auto; }
 
 .status-panel {
-  display: none;
   grid-column: 1 / 4;
   border-top: 1px solid var(--line);
   background: var(--panel);

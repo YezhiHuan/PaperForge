@@ -61,7 +61,7 @@ interface BrowserState {
 }
 
 export const defaultSettings: AppSettings = {
-  workspaceRoot: "PaperForgeWorkspace",
+  workspaceRoot: "workspace",
   defaultManuscriptMode: "word",
   llmProvider: {
     baseUrl: "https://api.openai.com/v1",
@@ -70,7 +70,7 @@ export const defaultSettings: AppSettings = {
   },
   defaultCitationStyle: "apa",
   defaultExportMode: "markdown",
-  themeMode: "dark",
+  themeMode: "light",
   language: "en"
 };
 
@@ -94,7 +94,7 @@ function normalizeProject(project: ProjectConfig): ProjectConfig {
   const targetJournal = project.targetJournal?.trim() || "Unspecified Journal";
   return {
     ...project,
-    version: project.version ?? "1.0.0",
+    version: project.version ?? "1.0.1",
     title,
     author,
     authors: project.authors ?? (author ? author.split(",").map((item) => item.trim()).filter(Boolean) : []),
@@ -187,11 +187,11 @@ export const api = {
   initWorkspace(rootPath: string) {
     return tauriOrBrowser<WorkspaceConfig>("init_workspace", { rootPath }, () => {
       const state = loadState();
-      state.settings = { ...state.settings, workspaceRoot: rootPath || "PaperForgeWorkspace" };
+      state.settings = { ...state.settings, workspaceRoot: rootPath || "workspace", themeMode: state.settings.themeMode || "light" };
       saveState(state);
       return {
-        version: "1.0.0",
-        workspaceName: "PaperForge Workspace",
+        version: "1.0.1",
+        workspaceName: "workspace",
         createdAt: nowIso(),
         updatedAt: nowIso(),
         papersDir: "papers",
@@ -299,18 +299,8 @@ export const api = {
   },
 
   deleteProject(projectId: string) {
-    return tauriOrBrowser<boolean>("delete_project", { projectId, deleteFiles: false }, () => {
-      const state = loadState();
-      state.projects = state.projects.filter((project) => project.id !== projectId);
-      delete state.sectionsByProject[projectId];
-      delete state.referencesByProject[projectId];
-      delete state.bibtexByProject[projectId];
-      delete state.citationTasksByProject[projectId];
-      delete state.literatureByProject[projectId];
-      delete state.claimsByProject[projectId];
-      delete state.proposalsByProject[projectId];
-      saveState(state);
-      return true;
+    return tauriOrBrowser<boolean>("delete_project", { projectId, deleteFiles: true }, () => {
+      throw new Error("Paper folder deletion requires the PaperForge desktop app.");
     });
   },
 
