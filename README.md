@@ -1,6 +1,6 @@
 # PaperForge
 
-Current version: `0.2.0`
+Current version: `0.3.0`
 
 PaperForge is a local-first AI manuscript writing workspace. One paper is one local folder containing drafts, references, literature records, outputs, templates, figures, data, and AI writing history.
 
@@ -11,8 +11,9 @@ PaperForge is an integration layer, not a Word, LaTeX, or Zotero replacement.
 - Project dashboard with animated project cards and create-project modal.
 - Project manifest export, import existing project folder flow, and safe project removal from the app list.
 - Paper project generator with manuscript, references, literature, templates, figures, data, AI, and outputs folders.
+- Optional manuscript section initialization: empty by default, template-based, or custom section names.
 - Three-panel research writing IDE: explorer, manuscript editor, assistant/tools.
-- Markdown section editing, preview, save flow, and citation insertion.
+- Markdown section editing, preview, save flow, section creation/rename, and citation insertion.
 - Better BibTeX paste/import parser for citekey, title, author, year, journal, DOI.
 - Word citation task scanner for `[CITE: key]` placeholders.
 - Literature PDF record library with mock search and replaceable embedding status.
@@ -56,10 +57,29 @@ Lint is not configured in this MVP. Use `npm run typecheck` and `npm run build` 
 
 Open the app, select **New Project**, then enter title, author, target journal, manuscript mode, and optional workspace root.
 
+Manuscript sections are optional. Default is **Empty manuscript**, so PaperForge creates `manuscript/sections/` but does not force `01_abstract.md`, `02_introduction.md`, or other standard section files.
+
+You can choose a section template or customize names:
+
+- Empty manuscript
+- Standard research paper
+- Engineering simulation paper
+- Review paper
+
+Custom section names support Chinese and English. Blank section names are ignored. Duplicate generated filenames get a suffix, such as `introduction_2.md`.
+
+Section file naming supports:
+
+- `numbered`: `01_abstract.md`, `02_introduction.md`
+- `slug only`: `abstract.md`, `introduction.md`
+
+For Chinese or non-slug titles, PaperForge uses safe fallbacks such as `01_section.md` or `section-001.md`.
+
 Generated structure:
 
 ```text
 Paper_Project/
+├─ paperforge.project.json
 ├─ project.json
 ├─ manuscript/
 │  ├─ sections/
@@ -76,11 +96,24 @@ Paper_Project/
 
 PaperForge currently does not initialize Git repositories inside paper project folders.
 
+After project creation, the IDE can add new sections from the project tree or empty manuscript state. Section rename changes the title in `paperforge.project.json`; existing Markdown file paths are kept unless explicit file rename support is added later.
+
+Section structure is persisted in `paperforge.project.json`:
+
+```json
+{
+  "manuscript": {
+    "sectionNaming": "numbered",
+    "sections": []
+  }
+}
+```
+
 ## Import Existing Project
 
 Use **Import Existing** on the dashboard and enter a PaperForge project folder path.
 
-If `project.json` exists, PaperForge registers that project. If it is missing, PaperForge creates a minimal project manifest and missing MVP folders without overwriting existing manuscript files.
+If `paperforge.project.json` or legacy `project.json` exists, PaperForge registers that project. If no manifest exists, PaperForge creates a minimal project manifest and missing MVP folders without overwriting existing manuscript files.
 
 ## Word Citation Workflow
 
@@ -115,7 +148,7 @@ Settings support:
 - API key
 - Model
 
-API keys are not stored in `project.json`. MVP stores settings in local app config or browser localStorage fallback. Later versions should use OS secure storage.
+API keys are not stored in `paperforge.project.json` or `project.json`. MVP stores settings in local app config or browser localStorage fallback. Later versions should use OS secure storage.
 
 When API key is missing, AI actions return clearly labeled mock proposals.
 
@@ -152,6 +185,15 @@ MVP intentionally omits per-paper Git features:
 - SQLite interface is reserved for later migration.
 
 ## Version History
+
+### 0.3.0
+
+- Added optional manuscript section initialization.
+- Empty manuscript is default for new projects.
+- Added section templates and custom section names.
+- Added section naming mode: numbered or slug only.
+- Added add-section and rename-section support in the IDE.
+- Persisted section title/path/order/status in `paperforge.project.json`.
 
 ### 0.2.0
 

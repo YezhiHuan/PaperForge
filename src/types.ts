@@ -8,6 +8,25 @@ export type ExportStatus = "pending" | "running" | "success" | "failed";
 export type AppLogLevel = "info" | "warning" | "error" | "success";
 export type ThemeMode = "dark" | "light" | "eyeCare";
 export type ExportWarningSeverity = "info" | "warning" | "error";
+export type SectionNamingMode = "numbered" | "slugOnly";
+export type SectionTemplateId = "empty" | "standard" | "engineeringSimulation" | "review";
+export type SectionStatus = "draft" | "review" | "done";
+export type ProjectActivityType = "section.created" | "section.renamed" | "section.updated";
+
+export interface ManuscriptManifestSection {
+  id: string;
+  title: string;
+  path: string;
+  order: number;
+  status: SectionStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ManuscriptManifest {
+  sectionNaming: SectionNamingMode;
+  sections: ManuscriptManifestSection[];
+}
 
 export interface ProjectConfig {
   id: string;
@@ -19,6 +38,7 @@ export interface ProjectConfig {
   createdAt: string;
   updatedAt: string;
   citationBackend: CitationBackend;
+  manuscript: ManuscriptManifest;
 }
 
 export interface ProjectCreateInput {
@@ -27,6 +47,8 @@ export interface ProjectCreateInput {
   targetJournal: string;
   manuscriptMode: ManuscriptMode;
   workspaceRoot?: string;
+  sectionNaming: SectionNamingMode;
+  sectionNames: string[];
 }
 
 export interface ProjectImportInput {
@@ -40,6 +62,18 @@ export interface ManuscriptSection {
   order: number;
   content: string;
   updatedAt: string;
+  path: string;
+  status: SectionStatus;
+  createdAt: string;
+}
+
+export interface SectionCreateInput {
+  title: string;
+}
+
+export interface SectionRenameInput {
+  sectionId: string;
+  title: string;
 }
 
 export interface ReferenceItem {
@@ -114,6 +148,14 @@ export interface AppLog {
   id: string;
   level: AppLogLevel;
   message: string;
+  createdAt: string;
+}
+
+export interface ProjectActivity {
+  id: string;
+  type: ProjectActivityType;
+  message: string;
+  sectionId?: string;
   createdAt: string;
 }
 

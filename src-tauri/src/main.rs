@@ -15,6 +15,8 @@ struct ProjectCreateInput {
     target_journal: String,
     manuscript_mode: ManuscriptMode,
     workspace_root: Option<String>,
+    section_naming: SectionNamingMode,
+    section_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +31,34 @@ struct ProjectConfig {
     created_at: String,
     updated_at: String,
     citation_backend: CitationBackend,
+    #[serde(default = "default_manuscript_manifest")]
+    manuscript: ManuscriptManifest,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManuscriptManifest {
+    section_naming: SectionNamingMode,
+    sections: Vec<ManuscriptManifestSection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManuscriptManifestSection {
+    id: String,
+    title: String,
+    path: String,
+    order: u32,
+    status: SectionStatus,
+    created_at: String,
+    updated_at: String,
+}
+
+fn default_manuscript_manifest() -> ManuscriptManifest {
+    ManuscriptManifest {
+        section_naming: SectionNamingMode::Numbered,
+        sections: vec![],
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +79,21 @@ enum CitationBackend {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+enum SectionNamingMode {
+    Numbered,
+    SlugOnly,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum SectionStatus {
+    Draft,
+    Review,
+    Done,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ManuscriptSection {
     id: String,
     filename: String,
@@ -56,6 +101,22 @@ struct ManuscriptSection {
     order: u32,
     content: String,
     updated_at: String,
+    path: String,
+    status: SectionStatus,
+    created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SectionCreateInput {
+    title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SectionRenameInput {
+    section_id: String,
+    title: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +271,28 @@ struct AppLog {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ProjectActivityType {
+    #[serde(rename = "section.created")]
+    SectionCreated,
+    #[serde(rename = "section.renamed")]
+    SectionRenamed,
+    #[serde(rename = "section.updated")]
+    SectionUpdated,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectActivity {
+    id: String,
+    #[serde(rename = "type")]
+    activity_type: ProjectActivityType,
+    message: String,
+    section_id: Option<String>,
+    created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum ThemeMode {
     Dark,
@@ -327,23 +410,157 @@ fn project_by_id(project_id: &str) -> Result<ProjectConfig, String> {
         .ok_or_else(|| "Project not found".to_string())
 }
 
-fn initial_sections() -> Vec<ManuscriptSection> {
-    let data = [
-        ("01_abstract.md", "Abstract", 1, "## Abstract\n\nDraft the study objective, methods, key results, and conclusion.\n"),
-        ("02_introduction.md", "Introduction", 2, "## Introduction\n\nFrame the research gap and cite prior work.\n"),
-        ("03_methods.md", "Methods", 3, "## Methods\n\nDescribe materials, setup, datasets, and analysis methods.\n"),
-        ("04_results.md", "Results", 4, "## Results\n\nReport findings with traceable evidence.\n"),
-        ("05_discussion.md", "Discussion", 5, "## Discussion\n\nInterpret results, limitations, and implications.\n"),
-        ("06_conclusion.md", "Conclusion", 6, "## Conclusion\n\nSummarize contribution and next work.\n"),
-    ];
-    data.into_iter()
-        .map(|(filename, title, order, content)| ManuscriptSection {
-            id: filename.trim_end_matches(".md").to_string(),
-            filename: filename.to_string(),
-            title: title.to_string(),
-            order,
-            content: content.to_string(),
-            updated_at: now_iso(),
+fn project_manifest_path(root: &Path) -> PathBuf {
+    root.join("paperforge.project.json")
+}
+
+fn legacy_project_manifest_path(root: &Path) -> PathBuf {
+    root.join("project.json")
+}
+
+fn activity_path(root: &Path) -> PathBuf {
+    root.join("logs/activity.json")
+}
+
+fn slugify_title(title: &str) -> String {
+    let mut slug = String::new();
+    let mut last_dash = false;
+    for ch in title.trim().to_lowercase().chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch);
+            last_dash = false;
+        } else if !last_dash && !slug.is_empty() {
+            slug.push('-');
+            last_dash = true;
+        }
+    }
+    slug.trim_matches('-').to_string()
+}
+
+fn make_section_filename(title: &str, index: usize, naming: &SectionNamingMode, existing: &mut Vec<String>) -> String {
+    let fallback = match naming {
+        SectionNamingMode::Numbered => "section".to_string(),
+        SectionNamingMode::SlugOnly => format!("section-{:03}", index),
+    };
+    let slug = {
+        let value = slugify_title(title);
+        if value.is_empty() { fallback } else { value }
+    };
+    let base = match naming {
+        SectionNamingMode::Numbered => format!("{:02}_{}", index, slug),
+        SectionNamingMode::SlugOnly => slug,
+    };
+    let mut filename = format!("{}.md", base);
+    let mut suffix = 2;
+    while existing.iter().any(|item| item == &filename) {
+        filename = format!("{}_{}.md", base, suffix);
+        suffix += 1;
+    }
+    existing.push(filename.clone());
+    filename
+}
+
+fn section_from_manifest(project: &ProjectConfig, manifest: &ManuscriptManifestSection) -> Result<ManuscriptSection, String> {
+    let root = PathBuf::from(&project.root_path);
+    let path = root.join(&manifest.path);
+    let content = if path.exists() {
+        fs::read_to_string(&path).map_err(|err| err.to_string())?
+    } else {
+        String::new()
+    };
+    let filename = PathBuf::from(&manifest.path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("section.md")
+        .to_string();
+    Ok(ManuscriptSection {
+        id: manifest.id.clone(),
+        filename,
+        title: manifest.title.clone(),
+        order: manifest.order,
+        content,
+        updated_at: manifest.updated_at.clone(),
+        path: manifest.path.clone(),
+        status: manifest.status.clone(),
+        created_at: manifest.created_at.clone(),
+    })
+}
+
+fn manifest_from_section(section: &ManuscriptSection) -> ManuscriptManifestSection {
+    ManuscriptManifestSection {
+        id: section.id.clone(),
+        title: section.title.clone(),
+        path: section.path.clone(),
+        order: section.order,
+        status: section.status.clone(),
+        created_at: section.created_at.clone(),
+        updated_at: section.updated_at.clone(),
+    }
+}
+
+fn create_initial_sections(section_names: &[String], naming: &SectionNamingMode) -> Vec<ManuscriptSection> {
+    let timestamp = now_iso();
+    let mut existing = vec![];
+    section_names
+        .iter()
+        .map(|title| title.trim())
+        .filter(|title| !title.is_empty())
+        .enumerate()
+        .map(|(index, title)| {
+            let order = (index + 1) as u32;
+            let filename = make_section_filename(title, index + 1, naming, &mut existing);
+            ManuscriptSection {
+                id: format!("section_{}", Uuid::new_v4()),
+                filename: filename.clone(),
+                title: title.to_string(),
+                order,
+                content: format!("## {}\n\n", title),
+                updated_at: timestamp.clone(),
+                path: format!("manuscript/sections/{}", filename),
+                status: SectionStatus::Draft,
+                created_at: timestamp.clone(),
+            }
+        })
+        .collect()
+}
+
+fn scan_existing_section_files(project: &ProjectConfig) -> Result<Vec<ManuscriptSection>, String> {
+    let root = PathBuf::from(&project.root_path);
+    let section_dir = root.join("manuscript/sections");
+    if !section_dir.exists() {
+        return Ok(vec![]);
+    }
+    let mut entries = fs::read_dir(section_dir)
+        .map_err(|err| err.to_string())?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("md"))
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.path());
+    let timestamp = now_iso();
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let path = entry.path();
+            let filename = path.file_name().and_then(|value| value.to_str()).unwrap_or("section.md").to_string();
+            let content = fs::read_to_string(&path).unwrap_or_default();
+            let title = content
+                .lines()
+                .find_map(|line| line.strip_prefix("## ").or_else(|| line.strip_prefix("# ")))
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| filename.trim_end_matches(".md").replace('_', " ").replace('-', " "));
+            Ok(ManuscriptSection {
+                id: format!("section_{}", Uuid::new_v4()),
+                filename: filename.clone(),
+                title,
+                order: (index + 1) as u32,
+                content,
+                updated_at: timestamp.clone(),
+                path: format!("manuscript/sections/{}", filename),
+                status: SectionStatus::Draft,
+                created_at: timestamp.clone(),
+            })
         })
         .collect()
 }
@@ -368,19 +585,21 @@ fn ensure_structure(project: &ProjectConfig) -> Result<(), String> {
     for folder in folders {
         fs::create_dir_all(root.join(folder)).map_err(|err| err.to_string())?;
     }
-    write_if_missing(
-        &root.join("project.json"),
-        serde_json::to_string_pretty(project).map_err(|err| err.to_string())?.as_bytes(),
-    )?;
+    fs::create_dir_all(root.join("logs")).map_err(|err| err.to_string())?;
+    let raw_project = serde_json::to_string_pretty(project).map_err(|err| err.to_string())?;
+    fs::write(project_manifest_path(&root), raw_project.as_bytes()).map_err(|err| err.to_string())?;
+    fs::write(legacy_project_manifest_path(&root), raw_project.as_bytes()).map_err(|err| err.to_string())?;
     write_if_missing(&root.join("manuscript/paper.docx"), &[])?;
     write_if_missing(&root.join("manuscript/main.tex"), basic_latex_template().as_bytes())?;
     write_if_missing(&root.join("references/references.bib"), b"")?;
     write_if_missing(&root.join("templates/word_template.docx"), &[])?;
     write_if_missing(&root.join("ai/claims.json"), b"[]")?;
     write_if_missing(&root.join("literature/literature.json"), b"[]")?;
-    for section in initial_sections() {
-        let path = root.join("manuscript/sections").join(&section.filename);
-        write_if_missing(&path, section.content.as_bytes())?;
+    write_if_missing(&activity_path(&root), b"[]")?;
+    for manifest in &project.manuscript.sections {
+        let path = root.join(&manifest.path);
+        let content = format!("## {}\n\n", manifest.title);
+        write_if_missing(&path, content.as_bytes())?;
     }
     Ok(())
 }
@@ -427,6 +646,30 @@ fn append_app_log(log: AppLog) -> Result<Vec<AppLog>, String> {
     Ok(logs)
 }
 
+fn append_project_activity(
+    project: &ProjectConfig,
+    activity_type: ProjectActivityType,
+    message: String,
+    section_id: Option<String>,
+) -> Result<Vec<ProjectActivity>, String> {
+    let root = PathBuf::from(&project.root_path);
+    fs::create_dir_all(root.join("logs")).map_err(|err| err.to_string())?;
+    let path = activity_path(&root);
+    let mut activities: Vec<ProjectActivity> = read_json_vec(&path)?;
+    activities.insert(
+        0,
+        ProjectActivity {
+            id: format!("activity_{}", Uuid::new_v4()),
+            activity_type,
+            message,
+            section_id,
+            created_at: now_iso(),
+        },
+    );
+    write_json(&path, &activities)?;
+    Ok(activities)
+}
+
 #[tauri::command]
 fn read_settings() -> Result<AppSettings, String> {
     let path = settings_path()?;
@@ -457,6 +700,7 @@ fn create_project(input: ProjectCreateInput) -> Result<ProjectConfig, String> {
     let root_path = workspace_path.join(safe_folder_name(&input.title));
     let timestamp = now_iso();
     let citation_backend = citation_backend(&input.manuscript_mode);
+    let sections = create_initial_sections(&input.section_names, &input.section_naming);
     let project = ProjectConfig {
         id: format!("project_{}", Uuid::new_v4()),
         title: if input.title.trim().is_empty() { "Untitled Paper".to_string() } else { input.title.trim().to_string() },
@@ -467,6 +711,10 @@ fn create_project(input: ProjectCreateInput) -> Result<ProjectConfig, String> {
         created_at: timestamp.clone(),
         updated_at: timestamp,
         citation_backend,
+        manuscript: ManuscriptManifest {
+            section_naming: input.section_naming,
+            sections: sections.iter().map(manifest_from_section).collect(),
+        },
     };
     ensure_structure(&project)?;
     let mut projects = read_registry()?;
@@ -482,7 +730,11 @@ fn import_project_folder(root_path: String) -> Result<ProjectConfig, String> {
         return Err("Project folder path is required".to_string());
     }
     fs::create_dir_all(&root).map_err(|err| err.to_string())?;
-    let project_json = root.join("project.json");
+    let project_json = if project_manifest_path(&root).exists() {
+        project_manifest_path(&root)
+    } else {
+        legacy_project_manifest_path(&root)
+    };
     let mut project = if project_json.exists() {
         let raw = fs::read_to_string(&project_json).map_err(|err| err.to_string())?;
         serde_json::from_str::<ProjectConfig>(&raw).map_err(|err| err.to_string())?
@@ -503,6 +755,7 @@ fn import_project_folder(root_path: String) -> Result<ProjectConfig, String> {
             created_at: timestamp.clone(),
             updated_at: timestamp,
             citation_backend: CitationBackend::ZoteroWordPlugin,
+            manuscript: default_manuscript_manifest(),
         }
     };
     project.root_path = root.to_string_lossy().to_string();
@@ -540,7 +793,9 @@ fn update_project_config(project: ProjectConfig) -> Result<ProjectConfig, String
         .map(|item| if item.id == project.id { project.clone() } else { item })
         .collect();
     write_registry(&projects)?;
-    write_json(&PathBuf::from(&project.root_path).join("project.json"), &project)?;
+    let root = PathBuf::from(&project.root_path);
+    write_json(&project_manifest_path(&root), &project)?;
+    write_json(&legacy_project_manifest_path(&root), &project)?;
     Ok(project)
 }
 
@@ -590,20 +845,16 @@ fn export_project_manifest(project_id: String) -> Result<String, String> {
 
 #[tauri::command]
 fn list_sections(project_id: String) -> Result<Vec<ManuscriptSection>, String> {
-    let project = project_by_id(&project_id)?;
-    let mut sections = vec![];
-    for template in initial_sections() {
-        let path = PathBuf::from(&project.root_path)
-            .join("manuscript/sections")
-            .join(&template.filename);
-        let content = if path.exists() {
-            fs::read_to_string(&path).map_err(|err| err.to_string())?
-        } else {
-            template.content
-        };
-        sections.push(ManuscriptSection { content, ..template });
+    let mut project = project_by_id(&project_id)?;
+    if project.manuscript.sections.is_empty() {
+        let scanned = scan_existing_section_files(&project)?;
+        if !scanned.is_empty() {
+            project.manuscript.sections = scanned.iter().map(manifest_from_section).collect();
+            update_project_config(project.clone())?;
+            return Ok(scanned);
+        }
     }
-    Ok(sections)
+    project.manuscript.sections.iter().map(|section| section_from_manifest(&project, section)).collect()
 }
 
 #[tauri::command]
@@ -616,17 +867,90 @@ fn read_section(project_id: String, filename: String) -> Result<ManuscriptSectio
 
 #[tauri::command]
 fn save_section(project_id: String, section: ManuscriptSection) -> Result<ManuscriptSection, String> {
-    let project = project_by_id(&project_id)?;
+    let mut project = project_by_id(&project_id)?;
     let mut saved = section;
     saved.updated_at = now_iso();
     fs::write(
-        PathBuf::from(&project.root_path)
-            .join("manuscript/sections")
-            .join(&saved.filename),
+        PathBuf::from(&project.root_path).join(&saved.path),
         &saved.content,
     )
     .map_err(|err| err.to_string())?;
+    for manifest in &mut project.manuscript.sections {
+        if manifest.id == saved.id {
+            manifest.title = saved.title.clone();
+            manifest.updated_at = saved.updated_at.clone();
+            manifest.status = saved.status.clone();
+        }
+    }
+    update_project_config(project)?;
     Ok(saved)
+}
+
+#[tauri::command]
+fn create_section(project_id: String, input: SectionCreateInput) -> Result<ManuscriptSection, String> {
+    let mut project = project_by_id(&project_id)?;
+    let title = input.title.trim();
+    if title.is_empty() {
+        return Err("Section title is required".to_string());
+    }
+    let root = PathBuf::from(&project.root_path);
+    let order = project.manuscript.sections.len() + 1;
+    let mut existing = project
+        .manuscript
+        .sections
+        .iter()
+        .filter_map(|section| PathBuf::from(&section.path).file_name().and_then(|value| value.to_str()).map(|value| value.to_string()))
+        .collect::<Vec<_>>();
+    let filename = make_section_filename(title, order, &project.manuscript.section_naming, &mut existing);
+    let timestamp = now_iso();
+    let section = ManuscriptSection {
+        id: format!("section_{}", Uuid::new_v4()),
+        filename: filename.clone(),
+        title: title.to_string(),
+        order: order as u32,
+        content: format!("## {}\n\n", title),
+        updated_at: timestamp.clone(),
+        path: format!("manuscript/sections/{}", filename),
+        status: SectionStatus::Draft,
+        created_at: timestamp.clone(),
+    };
+    fs::write(root.join(&section.path), &section.content).map_err(|err| err.to_string())?;
+    project.manuscript.sections.push(manifest_from_section(&section));
+    update_project_config(project.clone())?;
+    append_project_activity(
+        &project,
+        ProjectActivityType::SectionCreated,
+        format!("Created section: {}", section.title),
+        Some(section.id.clone()),
+    )?;
+    Ok(section)
+}
+
+#[tauri::command]
+fn rename_section(project_id: String, input: SectionRenameInput) -> Result<ManuscriptSection, String> {
+    let mut project = project_by_id(&project_id)?;
+    let title = input.title.trim();
+    if title.is_empty() {
+        return Err("Section title is required".to_string());
+    }
+    let timestamp = now_iso();
+    let mut found = None;
+    for manifest in &mut project.manuscript.sections {
+        if manifest.id == input.section_id {
+            manifest.title = title.to_string();
+            manifest.updated_at = timestamp.clone();
+            found = Some(manifest.clone());
+        }
+    }
+    let manifest = found.ok_or_else(|| "Section not found".to_string())?;
+    update_project_config(project.clone())?;
+    append_project_activity(
+        &project,
+        ProjectActivityType::SectionRenamed,
+        format!("Renamed section: {}. File path kept: {}", manifest.title, manifest.path),
+        Some(manifest.id.clone()),
+    )?;
+    section_from_manifest(&project, &manifest)
 }
 
 #[tauri::command]
@@ -1014,6 +1338,8 @@ pub fn run() {
             list_sections,
             read_section,
             save_section,
+            create_section,
+            rename_section,
             list_project_tree,
             parse_bibtex,
             save_bibtex,
@@ -1045,4 +1371,128 @@ pub fn run() {
 
 fn main() {
     run();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
+
+    fn temp_app_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("paperforge_test_{}_{}", name, Uuid::new_v4()))
+    }
+
+    fn with_temp_cwd<T>(name: &str, run: impl FnOnce(PathBuf) -> T) -> T {
+        let _guard = CWD_LOCK.lock().expect("cwd lock");
+        let original = std::env::current_dir().expect("current dir");
+        let dir = temp_app_dir(name);
+        fs::create_dir_all(&dir).expect("temp dir");
+        std::env::set_current_dir(&dir).expect("set temp cwd");
+        let result = run(dir.clone());
+        std::env::set_current_dir(original).expect("restore cwd");
+        let _ = fs::remove_dir_all(dir);
+        result
+    }
+
+    fn create_input(title: &str, naming: SectionNamingMode, names: Vec<&str>) -> ProjectCreateInput {
+        ProjectCreateInput {
+            title: title.to_string(),
+            author: "Tester".to_string(),
+            target_journal: String::new(),
+            manuscript_mode: ManuscriptMode::Word,
+            workspace_root: Some("workspace".to_string()),
+            section_naming: naming,
+            section_names: names.into_iter().map(|value| value.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn empty_manuscript_creates_no_section_files_and_valid_manifest() {
+        with_temp_cwd("empty", |_dir| {
+            let project = create_project(create_input("Empty Paper", SectionNamingMode::Numbered, vec![])).expect("project");
+            let root = PathBuf::from(&project.root_path);
+            assert!(root.join("manuscript/sections").exists());
+            assert!(list_sections(project.id.clone()).expect("sections").is_empty());
+            let manifest: ProjectConfig = serde_json::from_str(
+                &fs::read_to_string(root.join("paperforge.project.json")).expect("manifest raw"),
+            )
+            .expect("manifest json");
+            assert!(manifest.manuscript.sections.is_empty());
+        });
+    }
+
+    #[test]
+    fn template_names_use_numbered_files_and_manifest_paths() {
+        with_temp_cwd("standard", |_dir| {
+            let project = create_project(create_input(
+                "Standard Paper",
+                SectionNamingMode::Numbered,
+                vec!["Abstract", "Introduction", "Methods"],
+            ))
+            .expect("project");
+            let sections = list_sections(project.id).expect("sections");
+            assert_eq!(sections.iter().map(|item| item.filename.as_str()).collect::<Vec<_>>(), vec![
+                "01_abstract.md",
+                "02_introduction.md",
+                "03_methods.md",
+            ]);
+            assert!(PathBuf::from(&project.root_path).join("paperforge.project.json").exists());
+        });
+    }
+
+    #[test]
+    fn slug_only_chinese_and_duplicate_names_are_safe() {
+        with_temp_cwd("slug", |_dir| {
+            let project = create_project(create_input(
+                "Slug Paper",
+                SectionNamingMode::SlugOnly,
+                vec!["引言", "Introduction", "Introduction"],
+            ))
+            .expect("project");
+            let sections = list_sections(project.id).expect("sections");
+            assert_eq!(sections[0].filename, "section-001.md");
+            assert_eq!(sections[1].filename, "introduction.md");
+            assert_eq!(sections[2].filename, "introduction_2.md");
+        });
+    }
+
+    #[test]
+    fn create_and_rename_section_update_manifest_and_activity() {
+        with_temp_cwd("activity", |_dir| {
+            let project = create_project(create_input("Activity Paper", SectionNamingMode::Numbered, vec![])).expect("project");
+            let section = create_section(
+                project.id.clone(),
+                SectionCreateInput {
+                    title: "新增章节".to_string(),
+                },
+            )
+            .expect("section");
+            assert_eq!(section.filename, "01_section.md");
+            let renamed = rename_section(
+                project.id.clone(),
+                SectionRenameInput {
+                    section_id: section.id.clone(),
+                    title: "Renamed Section".to_string(),
+                },
+            )
+            .expect("renamed");
+            assert_eq!(renamed.filename, "01_section.md");
+            assert_eq!(renamed.title, "Renamed Section");
+            let root = PathBuf::from(project_by_id(&project.id).expect("project").root_path);
+            let manifest: ProjectConfig = serde_json::from_str(
+                &fs::read_to_string(root.join("paperforge.project.json")).expect("manifest raw"),
+            )
+            .expect("manifest json");
+            assert_eq!(manifest.manuscript.sections[0].title, "Renamed Section");
+            assert_eq!(manifest.manuscript.sections[0].path, "manuscript/sections/01_section.md");
+            let activities: Vec<ProjectActivity> = serde_json::from_str(
+                &fs::read_to_string(root.join("logs/activity.json")).expect("activity raw"),
+            )
+            .expect("activity json");
+            assert!(activities.iter().any(|item| matches!(&item.activity_type, ProjectActivityType::SectionCreated)));
+            assert!(activities.iter().any(|item| matches!(&item.activity_type, ProjectActivityType::SectionRenamed)));
+        });
+    }
 }

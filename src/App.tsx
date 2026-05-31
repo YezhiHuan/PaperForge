@@ -14,17 +14,19 @@ import {
   Library,
   Loader2,
   Moon,
+  Pencil,
   Plus,
   Save,
   Search,
   Settings,
   Sparkles,
+  Trash2,
   X
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { api, defaultSettings } from "./lib/api";
-import { createClaim, formatCitation, markdownToPreview, mergeSections, nowIso } from "./lib/domain";
+import { createClaim, formatCitation, markdownToPreview, mergeSections, nowIso, sectionTemplateOptions } from "./lib/domain";
 import { APP_VERSION } from "./version";
 import type {
   AIProposal,
@@ -40,6 +42,8 @@ import type {
   ManuscriptSection,
   ProjectConfig,
   ReferenceItem,
+  SectionNamingMode,
+  SectionTemplateId,
   ThemeMode
 } from "./types";
 
@@ -61,7 +65,10 @@ const emptyProjectForm = {
   author: "",
   targetJournal: "",
   manuscriptMode: "word" as ManuscriptMode,
-  workspaceRoot: ""
+  workspaceRoot: "",
+  sectionTemplate: "empty" as SectionTemplateId,
+  sectionNaming: "numbered" as SectionNamingMode,
+  sectionNames: [] as string[]
 };
 
 const emptyImportForm = {
@@ -121,6 +128,11 @@ function App() {
     const log = api.appLog(level, message);
     setLogs((current) => [log, ...current].slice(0, 8));
     void api.appendAppLog(log).catch(() => undefined);
+  };
+
+  const openCreateModal = () => {
+    setProjectForm({ ...emptyProjectForm, manuscriptMode: settings.defaultManuscriptMode });
+    setShowCreateModal(true);
   };
 
   useEffect(() => {
@@ -220,6 +232,33 @@ function App() {
     const saved = await api.saveSection(activeProject.id, activeSection);
     setSections((current) => current.map((section) => (section.id === saved.id ? { ...saved, updatedAt: nowIso() } : section)));
     addLog("success", `Saved ${activeSection.filename}`);
+  }
+
+  async function createSectionFromPrompt() {
+    if (!activeProject) return;
+    const title = window.prompt("Section title");
+    if (!title?.trim()) return;
+    const section = await api.createSection(activeProject.id, { title });
+    const loadedSections = await api.readSections(activeProject.id);
+    const updatedProject = await api.readProjectConfig(activeProject.id);
+    setActiveProject(updatedProject);
+    setProjects((current) => current.map((project) => (project.id === updatedProject.id ? updatedProject : project)));
+    setSections(loadedSections);
+    setActiveSectionId(section.id);
+    addLog("success", `Created section: ${section.title}`);
+  }
+
+  async function renameSectionFromPrompt(section: ManuscriptSection) {
+    if (!activeProject) return;
+    const title = window.prompt("Rename section title. File path stays unchanged.", section.title);
+    if (!title?.trim() || title.trim() === section.title) return;
+    const renamed = await api.renameSection(activeProject.id, { sectionId: section.id, title });
+    const updatedProject = await api.readProjectConfig(activeProject.id);
+    setActiveProject(updatedProject);
+    setProjects((current) => current.map((project) => (project.id === updatedProject.id ? updatedProject : project)));
+    setSections((current) => current.map((item) => (item.id === renamed.id ? renamed : item)));
+    setActiveSectionId(renamed.id);
+    addLog("info", `Renamed section: ${renamed.title}. File path kept.`);
   }
 
   function updateActiveSection(content: string) {
@@ -341,10 +380,7 @@ function App() {
       <TopBar
         project={activeProject}
         onDashboard={() => setActiveProject(null)}
-        onNew={() => {
-          setProjectForm({ ...emptyProjectForm, manuscriptMode: settings.defaultManuscriptMode });
-          setShowCreateModal(true);
-        }}
+        onNew={openCreateModal}
         version={APP_VERSION}
       />
 
@@ -352,7 +388,7 @@ function App() {
         <Dashboard
           projects={projects}
           onOpen={selectProject}
-          onNew={() => setShowCreateModal(true)}
+          onNew={openCreateModal}
           onImport={() => setShowImportModal(true)}
           onDelete={deleteProject}
           onExport={exportProjectManifest}
@@ -366,6 +402,8 @@ function App() {
             expandedFolders={expandedFolders}
             setExpandedFolders={setExpandedFolders}
             setActiveSectionId={setActiveSectionId}
+            onCreateSection={createSectionFromPrompt}
+            onRenameSection={renameSectionFromPrompt}
           />
 
           <section className="editor-shell">
@@ -375,42 +413,56 @@ function App() {
                 <h1>{activeSection?.title ?? "No section"}</h1>
               </div>
               <div className="toolbar-actions">
-                <button className={editorMode === "edit" ? "seg active" : "seg"} onClick={() => setEditorMode("edit")}>
+                <button disabled={!activeSection} className={editorMode === "edit" ? "seg active" : "seg"} onClick={() => setEditorMode("edit")}>
                   Edit
                 </button>
-                <button className={editorMode === "preview" ? "seg active" : "seg"} onClick={() => setEditorMode("preview")}>
+                <button disabled={!activeSection} className={editorMode === "preview" ? "seg active" : "seg"} onClick={() => setEditorMode("preview")}>
                   Preview
                 </button>
-                <button className="primary-btn" onClick={saveActiveSection}>
+                <button className="secondary-btn" onClick={createSectionFromPrompt}>
+                  <Plus size={15} /> Create section
+                </button>
+                <button className="primary-btn" disabled={!activeSection} onClick={saveActiveSection}>
                   <Save size={15} /> Save
                 </button>
               </div>
             </div>
 
-            <AnimatePresence mode="wait">
-              {editorMode === "edit" ? (
-                <motion.textarea
-                  key="editor"
-                  variants={panelVariants}
-                  initial="hidden"
-                  animate="show"
-                  exit="exit"
-                  className="manuscript-editor"
-                  value={activeSection?.content ?? ""}
-                  onChange={(event) => updateActiveSection(event.target.value)}
-                />
-              ) : (
-                <motion.article
-                  key="preview"
-                  variants={panelVariants}
-                  initial="hidden"
-                  animate="show"
-                  exit="exit"
-                  className="preview"
-                  dangerouslySetInnerHTML={{ __html: markdownToPreview(activeSection?.content ?? "") }}
-                />
-              )}
-            </AnimatePresence>
+            {activeSection ? (
+              <AnimatePresence mode="wait">
+                {editorMode === "edit" ? (
+                  <motion.textarea
+                    key="editor"
+                    variants={panelVariants}
+                    initial="hidden"
+                    animate="show"
+                    exit="exit"
+                    className="manuscript-editor"
+                    value={activeSection.content}
+                    onChange={(event) => updateActiveSection(event.target.value)}
+                  />
+                ) : (
+                  <motion.article
+                    key="preview"
+                    variants={panelVariants}
+                    initial="hidden"
+                    animate="show"
+                    exit="exit"
+                    className="preview"
+                    dangerouslySetInnerHTML={{ __html: markdownToPreview(activeSection.content) }}
+                  />
+                )}
+              </AnimatePresence>
+            ) : (
+              <motion.div className="manuscript-empty" variants={panelVariants} initial="hidden" animate="show">
+                <FileText size={34} />
+                <h2>No manuscript sections yet.</h2>
+                <p>No manuscript sections yet. Create your first section to start writing.</p>
+                <button className="primary-btn" onClick={createSectionFromPrompt}>
+                  <Plus size={15} /> Create section
+                </button>
+              </motion.div>
+            )}
           </section>
 
           <RightPanel
@@ -559,7 +611,9 @@ function Sidebar({
   activeSectionId,
   expandedFolders,
   setExpandedFolders,
-  setActiveSectionId
+  setActiveSectionId,
+  onCreateSection,
+  onRenameSection
 }: {
   project: ProjectConfig;
   sections: ManuscriptSection[];
@@ -567,6 +621,8 @@ function Sidebar({
   expandedFolders: Record<string, boolean>;
   setExpandedFolders: (value: Record<string, boolean>) => void;
   setActiveSectionId: (id: string) => void;
+  onCreateSection: () => void;
+  onRenameSection: (section: ManuscriptSection) => void;
 }) {
   const folders = ["manuscript", "references", "literature", "figures", "data", "ai", "outputs"];
   return (
@@ -587,15 +643,28 @@ function Sidebar({
             {expandedFolders[folder] && (
               <motion.div className="tree-children" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
                 {folder === "manuscript"
-                  ? sections.map((section) => (
-                      <button
-                        key={section.id}
-                        className={section.id === activeSectionId ? "tree-file active" : "tree-file"}
-                        onClick={() => setActiveSectionId(section.id)}
-                      >
-                        <FileText size={14} /> {section.filename}
+                  ? (
+                    <>
+                      <button className="tree-file new-section" onClick={onCreateSection}>
+                        <Plus size={14} /> New Section
                       </button>
-                    ))
+                      {sections.length === 0 && <span className="tree-file muted">Empty manuscript</span>}
+                      {sections.map((section) => (
+                        <div className={section.id === activeSectionId ? "tree-file-row active" : "tree-file-row"} key={section.id}>
+                          <button
+                            className="tree-file"
+                            onClick={() => setActiveSectionId(section.id)}
+                            title={`${section.title} · ${section.path}`}
+                          >
+                            <FileText size={14} /> {section.title}
+                          </button>
+                          <button className="tree-icon-btn" onClick={() => onRenameSection(section)} title="Rename title; file path stays unchanged">
+                            <Pencil size={13} />
+                          </button>
+                        </div>
+                      ))}
+                    </>
+                  )
                   : <span className="tree-file muted">{folder === "references" ? "references.bib" : folder === "ai" ? "claims.json" : "MVP folder"}</span>}
               </motion.div>
             )}
@@ -900,6 +969,25 @@ function CreateProjectModal({
   onClose: () => void;
   onSubmit: (event: FormEvent) => void;
 }) {
+  const setTemplate = (templateId: SectionTemplateId) => {
+    const template = sectionTemplateOptions.find((item) => item.id === templateId) ?? sectionTemplateOptions[0];
+    setForm({ ...form, sectionTemplate: templateId, sectionNames: template.sections });
+  };
+  const updateSectionName = (index: number, value: string) => {
+    setForm({ ...form, sectionNames: form.sectionNames.map((name, itemIndex) => (itemIndex === index ? value : name)), sectionTemplate: "empty" });
+  };
+  const moveSection = (index: number, direction: -1 | 1) => {
+    const nextIndex = index + direction;
+    if (nextIndex < 0 || nextIndex >= form.sectionNames.length) return;
+    const next = [...form.sectionNames];
+    const [item] = next.splice(index, 1);
+    next.splice(nextIndex, 0, item);
+    setForm({ ...form, sectionNames: next, sectionTemplate: "empty" });
+  };
+  const removeSection = (index: number) => {
+    setForm({ ...form, sectionNames: form.sectionNames.filter((_, itemIndex) => itemIndex !== index), sectionTemplate: "empty" });
+  };
+
   return (
     <motion.div className="modal-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
       <motion.form className="modal" onSubmit={onSubmit} initial={{ opacity: 0, scale: 0.96, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96 }}>
@@ -914,6 +1002,38 @@ function CreateProjectModal({
           <option value="markdown">markdown</option>
         </select>
         <input placeholder="Workspace root (optional)" value={form.workspaceRoot} onChange={(event) => setForm({ ...form, workspaceRoot: event.target.value })} />
+        <section className="section-builder">
+          <div>
+            <h3>Manuscript Sections / 论文章节</h3>
+            <p className="modal-note">Default is Empty manuscript. Blank section names are ignored.</p>
+          </div>
+          <label>Template
+            <select value={form.sectionTemplate} onChange={(event) => setTemplate(event.target.value as SectionTemplateId)}>
+              {sectionTemplateOptions.map((template) => <option value={template.id} key={template.id}>{template.label}</option>)}
+            </select>
+          </label>
+          <label>Section file naming
+            <select value={form.sectionNaming} onChange={(event) => setForm({ ...form, sectionNaming: event.target.value as SectionNamingMode })}>
+              <option value="numbered">numbered</option>
+              <option value="slugOnly">slug only</option>
+            </select>
+          </label>
+          <div className="section-list">
+            {form.sectionNames.length === 0 && <div className="section-empty-note">No sections selected. Project will start with an empty manuscript.</div>}
+            {form.sectionNames.map((sectionName, index) => (
+              <div className="section-row" key={`${index}-${sectionName}`}>
+                <span>{String(index + 1).padStart(2, "0")}</span>
+                <input placeholder="Section title" value={sectionName} onChange={(event) => updateSectionName(index, event.target.value)} />
+                <button type="button" onClick={() => moveSection(index, -1)} disabled={index === 0}>Up</button>
+                <button type="button" onClick={() => moveSection(index, 1)} disabled={index === form.sectionNames.length - 1}>Down</button>
+                <button type="button" className="danger-action" onClick={() => removeSection(index)}><Trash2 size={13} /></button>
+              </div>
+            ))}
+          </div>
+          <button type="button" className="secondary-btn wide" onClick={() => setForm({ ...form, sectionNames: [...form.sectionNames, ""], sectionTemplate: "empty" })}>
+            <Plus size={14} /> Add custom section
+          </button>
+        </section>
         <button className="primary-btn wide">Generate local folder structure</button>
       </motion.form>
     </motion.div>

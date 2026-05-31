@@ -7,47 +7,39 @@ import type {
   LiteratureItem,
   ManuscriptMode,
   ManuscriptSection,
+  ProjectActivity,
   ProjectConfig,
   ProjectCreateInput,
-  ReferenceItem
+  ReferenceItem,
+  SectionNamingMode,
+  SectionTemplateId
 } from "../types";
 
-export const sectionTemplates: Array<Pick<ManuscriptSection, "filename" | "title" | "order" | "content">> = [
+export const sectionTemplateOptions: Array<{ id: SectionTemplateId; label: string; sections: string[] }> = [
+  { id: "empty", label: "Empty manuscript", sections: [] },
   {
-    filename: "01_abstract.md",
-    title: "Abstract",
-    order: 1,
-    content: "## Abstract\n\nDraft the study objective, methods, key results, and conclusion.\n"
+    id: "standard",
+    label: "Standard research paper",
+    sections: ["Abstract", "Introduction", "Methods", "Results", "Discussion", "Conclusion", "References"]
   },
   {
-    filename: "02_introduction.md",
-    title: "Introduction",
-    order: 2,
-    content: "## Introduction\n\nFrame the research gap and cite prior work.\n"
+    id: "engineeringSimulation",
+    label: "Engineering simulation paper",
+    sections: [
+      "Abstract",
+      "Introduction",
+      "Geometry and Physical Model",
+      "Numerical Method",
+      "Mesh Independence Study",
+      "Results and Discussion",
+      "Optimization Analysis",
+      "Conclusion"
+    ]
   },
   {
-    filename: "03_methods.md",
-    title: "Methods",
-    order: 3,
-    content: "## Methods\n\nDescribe materials, setup, datasets, and analysis methods.\n"
-  },
-  {
-    filename: "04_results.md",
-    title: "Results",
-    order: 4,
-    content: "## Results\n\nReport findings with traceable evidence.\n"
-  },
-  {
-    filename: "05_discussion.md",
-    title: "Discussion",
-    order: 5,
-    content: "## Discussion\n\nInterpret results, limitations, and implications.\n"
-  },
-  {
-    filename: "06_conclusion.md",
-    title: "Conclusion",
-    order: 6,
-    content: "## Conclusion\n\nSummarize contribution and next work.\n"
+    id: "review",
+    label: "Review paper",
+    sections: ["Abstract", "Introduction", "Background", "Literature Review", "Discussion", "Future Perspectives", "Conclusion"]
   }
 ];
 
@@ -86,8 +78,34 @@ export function safeFolderName(title: string) {
   return (normalized || "Paper_Project").replace(/\s+/g, "_");
 }
 
+export function slugifyTitle(title: string) {
+  return title
+    .trim()
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+export function makeSectionFilename(title: string, index: number, naming: SectionNamingMode, existingFilenames: Set<string>) {
+  const fallback = naming === "numbered" ? "section" : `section-${String(index).padStart(3, "0")}`;
+  const slug = slugifyTitle(title) || fallback;
+  const prefix = naming === "numbered" ? `${String(index).padStart(2, "0")}_` : "";
+  const base = `${prefix}${slug}`;
+  let filename = `${base}.md`;
+  let suffix = 2;
+  while (existingFilenames.has(filename)) {
+    filename = `${base}_${suffix}.md`;
+    suffix += 1;
+  }
+  existingFilenames.add(filename);
+  return filename;
+}
+
 export function createProjectConfig(input: ProjectCreateInput, rootPath: string): ProjectConfig {
   const timestamp = nowIso();
+  const sections = createInitialSections(input.sectionNames, input.sectionNaming);
   return {
     id: makeId("project"),
     title: input.title.trim() || "Untitled Paper",
@@ -97,20 +115,43 @@ export function createProjectConfig(input: ProjectCreateInput, rootPath: string)
     rootPath,
     createdAt: timestamp,
     updatedAt: timestamp,
-    citationBackend: citationBackendForMode(input.manuscriptMode)
+    citationBackend: citationBackendForMode(input.manuscriptMode),
+    manuscript: {
+      sectionNaming: input.sectionNaming,
+      sections: sections.map((section) => ({
+        id: section.id,
+        title: section.title,
+        path: section.path,
+        order: section.order,
+        status: section.status,
+        createdAt: section.createdAt,
+        updatedAt: section.updatedAt
+      }))
+    }
   };
 }
 
-export function createInitialSections(): ManuscriptSection[] {
+export function createInitialSections(sectionNames: string[] = [], naming: SectionNamingMode = "numbered"): ManuscriptSection[] {
   const timestamp = nowIso();
-  return sectionTemplates.map((section) => ({
-    id: section.filename.replace(".md", ""),
-    filename: section.filename,
-    title: section.title,
-    order: section.order,
-    content: section.content,
-    updatedAt: timestamp
-  }));
+  const filenames = new Set<string>();
+  return sectionNames
+    .map((title) => title.trim())
+    .filter(Boolean)
+    .map((title, index) => {
+      const order = index + 1;
+      const filename = makeSectionFilename(title, order, naming, filenames);
+      return {
+        id: makeId("section"),
+        filename,
+        title,
+        order,
+        content: `## ${title}\n\n`,
+        path: `manuscript/sections/${filename}`,
+        status: "draft" as const,
+        createdAt: timestamp,
+        updatedAt: timestamp
+      };
+    });
 }
 
 export function formatCitation(mode: ManuscriptMode, citekey: string) {
@@ -263,6 +304,16 @@ export function appLog(level: AppLog["level"], message: string): AppLog {
     id: makeId("log"),
     level,
     message,
+    createdAt: nowIso()
+  };
+}
+
+export function projectActivity(type: ProjectActivity["type"], message: string, sectionId?: string): ProjectActivity {
+  return {
+    id: makeId("activity"),
+    type,
+    message,
+    sectionId,
     createdAt: nowIso()
   };
 }

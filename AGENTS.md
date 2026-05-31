@@ -29,6 +29,8 @@ Do not commit local workspaces, PDFs, API keys, model caches, vector indexes, or
 - Prefer structured Markdown / section JSON as the internal draft representation.
 - Export to Word / LaTeX should be derived from the internal draft.
 - Generated paper projects should not contain Git logic in the MVP.
+- Empty manuscript is a valid project state.
+- Section templates are optional user choices.
 
 ## Development Rules
 
@@ -42,6 +44,9 @@ Do not commit local workspaces, PDFs, API keys, model caches, vector indexes, or
 - Prefer small modules under src/features/.
 - Every major feature should have a clear data model.
 - If implementing a mock, label it clearly as mock and keep the interface replaceable.
+- Do not hard-code default manuscript sections during project creation.
+- Section titles and section file paths must be persisted in paperforge.project.json.
+- Avoid renaming existing section files automatically unless the user explicitly requests that feature.
 
 ## Generated Paper Project Rules
 
@@ -51,6 +56,7 @@ PaperForge may create project folders such as:
 
 ```text
 Paper_Project/
+├─ paperforge.project.json
 ├─ project.json
 ├─ manuscript/
 ├─ references/
@@ -63,6 +69,8 @@ Paper_Project/
 ```
 
 Do not initialize Git inside these paper project folders in the MVP.
+
+Manuscript sections are optional. If the user chooses an empty manuscript, create the manuscript/sections/ directory but no section files. Later section creation must update paperforge.project.json and logs/activity.json.
 
 ## Citation Rules
 

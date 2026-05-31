@@ -14,17 +14,21 @@ import type {
   ProjectConfig,
   ProjectCreateInput,
   ProjectImportInput,
-  ReferenceItem
+  ProjectActivity,
+  ReferenceItem,
+  SectionCreateInput,
+  SectionRenameInput
 } from "../types";
 import {
   appLog,
   convertCitationsForMode,
-  createInitialSections,
   createProjectConfig,
   makeId,
+  makeSectionFilename,
   mergeSections,
   nowIso,
   parseBibtexEntries,
+  projectActivity,
   safeFolderName,
   scanWordCitationTasks,
   searchLiteratureMock,
@@ -50,6 +54,7 @@ interface BrowserState {
   literatureByProject: Record<string, LiteratureItem[]>;
   claimsByProject: Record<string, ClaimRecord[]>;
   proposalsByProject: Record<string, AIProposal[]>;
+  activitiesByProject: Record<string, ProjectActivity[]>;
   logs: AppLog[];
   settings: AppSettings;
 }
@@ -76,9 +81,39 @@ const emptyState = (): BrowserState => ({
   literatureByProject: {},
   claimsByProject: {},
   proposalsByProject: {},
+  activitiesByProject: {},
   logs: [],
   settings: defaultSettings
 });
+
+function normalizeProject(project: ProjectConfig): ProjectConfig {
+  return {
+    ...project,
+    manuscript: project.manuscript ?? {
+      sectionNaming: "numbered",
+      sections: []
+    }
+  };
+}
+
+function syncProjectManifest(project: ProjectConfig, sections: ManuscriptSection[]) {
+  return {
+    ...normalizeProject(project),
+    updatedAt: nowIso(),
+    manuscript: {
+      sectionNaming: project.manuscript?.sectionNaming ?? "numbered",
+      sections: sections.map((section) => ({
+        id: section.id,
+        title: section.title,
+        path: section.path,
+        order: section.order,
+        status: section.status,
+        createdAt: section.createdAt,
+        updatedAt: section.updatedAt
+      }))
+    }
+  };
+}
 
 function loadState(): BrowserState {
   const raw = localStorage.getItem(storageKey);
@@ -126,7 +161,7 @@ export const api = {
   },
 
   listProjects() {
-    return tauriOrBrowser<ProjectConfig[]>("list_projects", {}, () => loadState().projects);
+    return tauriOrBrowser<ProjectConfig[]>("list_projects", {}, () => loadState().projects.map(normalizeProject));
   },
 
   readAppLogs() {
@@ -148,13 +183,24 @@ export const api = {
       const rootPath = `${input.workspaceRoot || state.settings.workspaceRoot}/${safeFolderName(input.title)}`;
       const project = createProjectConfig(input, rootPath);
       state.projects = [project, ...state.projects];
-      state.sectionsByProject[project.id] = createInitialSections();
+      state.sectionsByProject[project.id] = project.manuscript.sections.map((section) => ({
+        id: section.id,
+        filename: section.path.split("/").pop() ?? `${section.id}.md`,
+        title: section.title,
+        order: section.order,
+        content: `## ${section.title}\n\n`,
+        path: section.path,
+        status: section.status,
+        createdAt: section.createdAt,
+        updatedAt: section.updatedAt
+      }));
       state.referencesByProject[project.id] = [];
       state.bibtexByProject[project.id] = "";
       state.citationTasksByProject[project.id] = [];
       state.literatureByProject[project.id] = [];
       state.claimsByProject[project.id] = [];
       state.proposalsByProject[project.id] = [];
+      state.activitiesByProject[project.id] = [];
       saveState(state);
       return project;
     });
@@ -170,18 +216,31 @@ export const api = {
           author: "",
           targetJournal: "",
           manuscriptMode: state.settings.defaultManuscriptMode,
-          workspaceRoot: input.rootPath
+          workspaceRoot: input.rootPath,
+          sectionNaming: "numbered",
+          sectionNames: []
         },
         input.rootPath.trim()
       );
       state.projects = [project, ...state.projects.filter((item) => item.rootPath !== project.rootPath)];
-      state.sectionsByProject[project.id] = createInitialSections();
+      state.sectionsByProject[project.id] = project.manuscript.sections.map((section) => ({
+        id: section.id,
+        filename: section.path.split("/").pop() ?? `${section.id}.md`,
+        title: section.title,
+        order: section.order,
+        content: `## ${section.title}\n\n`,
+        path: section.path,
+        status: section.status,
+        createdAt: section.createdAt,
+        updatedAt: section.updatedAt
+      }));
       state.referencesByProject[project.id] = [];
       state.bibtexByProject[project.id] = "";
       state.citationTasksByProject[project.id] = [];
       state.literatureByProject[project.id] = [];
       state.claimsByProject[project.id] = [];
       state.proposalsByProject[project.id] = [];
+      state.activitiesByProject[project.id] = [];
       saveState(state);
       return project;
     });
@@ -229,7 +288,7 @@ export const api = {
     return tauriOrBrowser<ProjectConfig>("open_project", { projectId }, () => {
       const project = loadState().projects.find((item) => item.id === projectId);
       if (!project) throw new Error("Project not found");
-      return project;
+      return normalizeProject(project);
     });
   },
 
@@ -237,16 +296,16 @@ export const api = {
     return tauriOrBrowser<ProjectConfig>("read_project_config", { projectId }, () => {
       const project = loadState().projects.find((item) => item.id === projectId);
       if (!project) throw new Error("Project not found");
-      return project;
+      return normalizeProject(project);
     });
   },
 
   updateProjectConfig(project: ProjectConfig) {
     return tauriOrBrowser<ProjectConfig>("update_project_config", { project }, () => {
       const state = loadState();
-      state.projects = state.projects.map((item) => (item.id === project.id ? project : item));
+      state.projects = state.projects.map((item) => (item.id === project.id ? normalizeProject(project) : item));
       saveState(state);
-      return project;
+      return normalizeProject(project);
     });
   },
 
@@ -257,7 +316,7 @@ export const api = {
   readSections(projectId: string) {
     return tauriOrBrowser<ManuscriptSection[]>("list_sections", { projectId }, () => {
       const state = loadState();
-      if (!state.sectionsByProject[projectId]) state.sectionsByProject[projectId] = createInitialSections();
+      if (!state.sectionsByProject[projectId]) state.sectionsByProject[projectId] = [];
       saveState(state);
       return state.sectionsByProject[projectId];
     });
@@ -275,9 +334,65 @@ export const api = {
     return tauriOrBrowser<ManuscriptSection>("save_section", { projectId, section }, () => {
       const state = loadState();
       const sections = state.sectionsByProject[projectId] ?? [];
-      state.sectionsByProject[projectId] = sections.map((item) =>
+      const nextSections = sections.map((item) =>
         item.id === section.id ? { ...section, updatedAt: nowIso() } : item
       );
+      state.sectionsByProject[projectId] = nextSections;
+      state.projects = state.projects.map((project) => project.id === projectId ? syncProjectManifest(project, nextSections) : project);
+      saveState(state);
+      return section;
+    });
+  },
+
+  createSection(projectId: string, input: SectionCreateInput) {
+    return tauriOrBrowser<ManuscriptSection>("create_section", { projectId, input }, () => {
+      const state = loadState();
+      const project = normalizeProject(state.projects.find((item) => item.id === projectId)!);
+      const sections = state.sectionsByProject[projectId] ?? [];
+      const order = sections.length + 1;
+      const filenames = new Set(sections.map((section) => section.filename));
+      const filename = makeSectionFilename(input.title, order, project.manuscript.sectionNaming, filenames);
+      const timestamp = nowIso();
+      const section: ManuscriptSection = {
+        id: makeId("section"),
+        filename,
+        title: input.title.trim(),
+        order,
+        content: `## ${input.title.trim()}\n\n`,
+        path: `manuscript/sections/${filename}`,
+        status: "draft",
+        createdAt: timestamp,
+        updatedAt: timestamp
+      };
+      const nextSections = [...sections, section];
+      state.sectionsByProject[projectId] = nextSections;
+      state.projects = state.projects.map((item) => item.id === projectId ? syncProjectManifest(project, nextSections) : item);
+      state.activitiesByProject[projectId] = [
+        projectActivity("section.created", `Created section: ${section.title}`, section.id),
+        ...(state.activitiesByProject[projectId] ?? [])
+      ];
+      saveState(state);
+      return section;
+    });
+  },
+
+  renameSection(projectId: string, input: SectionRenameInput) {
+    return tauriOrBrowser<ManuscriptSection>("rename_section", { projectId, input }, () => {
+      const state = loadState();
+      const sections = state.sectionsByProject[projectId] ?? [];
+      const timestamp = nowIso();
+      const nextSections = sections.map((section) =>
+        section.id === input.sectionId ? { ...section, title: input.title.trim(), updatedAt: timestamp } : section
+      );
+      const section = nextSections.find((item) => item.id === input.sectionId);
+      if (!section) throw new Error("Section not found");
+      state.sectionsByProject[projectId] = nextSections;
+      const project = normalizeProject(state.projects.find((item) => item.id === projectId)!);
+      state.projects = state.projects.map((item) => item.id === projectId ? syncProjectManifest(project, nextSections) : item);
+      state.activitiesByProject[projectId] = [
+        projectActivity("section.renamed", `Renamed section: ${section.title}. File path kept: ${section.path}`, section.id),
+        ...(state.activitiesByProject[projectId] ?? [])
+      ];
       saveState(state);
       return section;
     });
