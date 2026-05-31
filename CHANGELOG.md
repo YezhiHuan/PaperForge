@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.2
+
+### Changed
+
+- Dashboard project cards now show only edit and delete icon actions.
+- Removed dashboard manifest export action; project saves persist Markdown sections in workspace project folders.
+- Removed empty MVP folder labels from the project tree.
+- Clarified workspace-backed Markdown save behavior.
+
+### Fixed
+
+- Added regression coverage for saving section Markdown into the workspace project folder.
+
 ## 0.3.1
 
 ### Added

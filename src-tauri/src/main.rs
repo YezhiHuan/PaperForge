@@ -2132,4 +2132,31 @@ mod tests {
             assert!(!output.join(".git").exists());
         });
     }
+
+    #[test]
+    fn saving_section_writes_markdown_inside_workspace_project() {
+        with_temp_cwd("save_md", |_dir| {
+            let project = create_project(create_input(
+                "Workspace Paper",
+                SectionNamingMode::Numbered,
+                vec!["Draft"],
+            ))
+            .expect("project");
+            let mut section = list_sections(project.id.clone())
+                .expect("sections")
+                .pop()
+                .expect("section");
+            section.content = "# Draft\n\nSaved body.".to_string();
+            let saved = save_section(project.id.clone(), section).expect("saved");
+            let md_path = PathBuf::from(&project.root_path).join(saved.path);
+            assert!(md_path.exists());
+            assert_eq!(
+                fs::read_to_string(md_path).expect("markdown"),
+                "# Draft\n\nSaved body."
+            );
+            assert!(PathBuf::from(&project.root_path)
+                .join("paperforge.project.json")
+                .exists());
+        });
+    }
 }

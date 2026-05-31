@@ -121,6 +121,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   display: flex;
   gap: 8px;
   margin-top: 14px;
+  justify-content: flex-end;
 }
 .project-actions button {
   display: inline-flex;
@@ -131,6 +132,12 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   color: var(--text);
   border-radius: 6px;
   padding: 7px 9px;
+}
+.project-actions .icon-action {
+  width: 34px;
+  height: 34px;
+  justify-content: center;
+  padding: 0;
 }
 .project-actions .danger-action { color: var(--danger); }
 .mode-chip {
@@ -220,6 +227,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .chev.open { transform: rotate(0deg); }
 .tree-folder:not(:has(+ .tree-children)) .chev { transform: rotate(-90deg); }
 .tree-children { overflow: hidden; }
+.tree-placeholder { min-height: 8px; }
 
 .editor-shell {
   background: var(--bg);

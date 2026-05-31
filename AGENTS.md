@@ -16,6 +16,8 @@ Generated paper projects are user data and should not be committed.
 
 Do not commit local workspaces, PDFs, API keys, model caches, vector indexes, or private manuscript data.
 
+The source repository must ignore `workspace/`; generated paper projects live there by default.
+
 ## Core Product Principles
 
 - One paper equals one local project folder.
@@ -53,6 +55,7 @@ Do not commit local workspaces, PDFs, API keys, model caches, vector indexes, or
 - Word/LaTeX exporters should use staged export architecture, not fragile ad hoc hacks.
 - Settings select/toggle changes should apply immediately.
 - Do not reintroduce the bottom activity/export status strip unless explicitly requested.
+- Do not add dashboard-level export controls unless explicitly requested; prefer project-internal workspace saves and export panel actions.
 - Keep sidebar/dropdown contrast accessible in all themes.
 
 ## Generated Paper Project Rules

@@ -1,6 +1,6 @@
 # PaperForge
 
-Current version: `0.3.1`
+Current version: `0.3.2`
 
 PaperForge is a local-first AI manuscript writing workspace. One paper is one local folder containing drafts, references, literature records, outputs, templates, figures, data, and AI writing history.
 
@@ -10,13 +10,13 @@ PaperForge is an integration layer, not a Word, LaTeX, or Zotero replacement.
 
 - Project dashboard with animated project cards and create-project modal.
 - English and Chinese UI language switching from Settings, persisted locally.
-- Project manifest export, import existing project folder flow, and safe project removal from the app list.
+- Import existing project folder flow and safe project removal from the app list.
 - Paper project generator with manuscript, references, literature, templates, figures, data, AI, and outputs folders.
 - Optional paper title, author, and journal metadata with safe defaults.
 - Editable paper title from the dashboard, IDE header, and Project Info panel.
 - Optional manuscript section initialization: empty by default, template-based, or custom section names.
 - Three-panel research writing IDE: explorer, manuscript editor, assistant/tools.
-- Markdown section editing, preview, save flow, section creation/rename, and citation insertion.
+- Markdown section editing, preview, workspace-backed save flow, section creation/rename, and citation insertion.
 - Better BibTeX paste/import parser for citekey, title, author, year, journal, DOI.
 - Word citation task scanner for `[CITE: key]` placeholders.
 - Literature PDF record library with mock search and replaceable embedding status.
@@ -106,7 +106,20 @@ Paper_Project/
 
 PaperForge currently does not initialize Git repositories inside paper project folders.
 
-After project creation, the IDE can add new sections from the project tree or empty manuscript state. Section rename changes the title in `paperforge.project.json`; existing Markdown file paths are kept unless explicit file rename support is added later.
+By default, project folders are created under `workspace/`. Each paper is a child folder, such as:
+
+```text
+workspace/
+└─ Untitled_Paper/
+   ├─ paperforge.project.json
+   └─ manuscript/
+      └─ sections/
+         └─ 01_introduction.md
+```
+
+The repository `.gitignore` excludes `workspace/`, so generated manuscript projects stay out of source control.
+
+After project creation, the IDE can add new sections from the project tree or empty manuscript state. Pressing **Save** writes the active Markdown section to `manuscript/sections/*.md` inside that paper's workspace folder. Section rename changes the title in `paperforge.project.json`; existing Markdown file paths are kept unless explicit file rename support is added later.
 
 Paper title edits update the current UI, dashboard list, `paperforge.project.json`, and `updatedAt`. PaperForge does not rename the local project folder automatically.
 
@@ -221,6 +234,13 @@ MVP intentionally omits per-paper Git features:
 - SQLite interface is reserved for later migration.
 
 ## Version History
+
+### 0.3.2
+
+- Dashboard project cards now show edit/delete icon actions only.
+- Removed dashboard export action.
+- Clarified and tested workspace-backed Markdown saves.
+- Removed placeholder MVP folder labels from the project tree.
 
 ### 0.3.1
 

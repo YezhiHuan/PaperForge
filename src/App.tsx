@@ -255,7 +255,7 @@ function App() {
     if (!activeProject || !activeSection) return;
     const saved = await api.saveSection(activeProject.id, activeSection);
     setSections((current) => current.map((section) => (section.id === saved.id ? { ...saved, updatedAt: nowIso() } : section)));
-    addLog("success", `Saved ${activeSection.filename}`);
+    addLog("success", `Saved to workspace: ${activeSection.path}`);
   }
 
   async function createSectionFromPrompt() {
@@ -419,7 +419,6 @@ function App() {
           onNew={openCreateModal}
           onImport={() => setShowImportModal(true)}
           onDelete={deleteProject}
-          onExport={exportProjectManifest}
           onEditTitle={editProjectTitle}
           t={tr}
           language={settings.language}
@@ -618,7 +617,6 @@ function Dashboard({
   onNew,
   onImport,
   onDelete,
-  onExport,
   onEditTitle,
   t,
   language
@@ -628,7 +626,6 @@ function Dashboard({
   onNew: () => void;
   onImport: () => void;
   onDelete: (project: ProjectConfig) => void;
-  onExport: (project: ProjectConfig) => void;
   onEditTitle: (project: ProjectConfig) => void;
   t: Translate;
   language: Language;
@@ -662,9 +659,12 @@ function Dashboard({
               <small>{project.rootPath}</small>
             </button>
             <div className="project-actions">
-              <button onClick={() => onEditTitle(project)}><Pencil size={13} /> {t("actions.updateTitle")}</button>
-              <button onClick={() => onExport(project)}><Download size={13} /> {t("export.manifestJson")}</button>
-              <button className="danger-action" onClick={() => onDelete(project)}><X size={13} /> {t("actions.remove")}</button>
+              <button className="icon-action" onClick={() => onEditTitle(project)} title={t("actions.updateTitle")} aria-label={t("actions.updateTitle")}>
+                <Pencil size={15} />
+              </button>
+              <button className="icon-action danger-action" onClick={() => onDelete(project)} title={t("actions.remove")} aria-label={t("actions.remove")}>
+                <Trash2 size={15} />
+              </button>
             </div>
           </motion.article>
         ))}
@@ -749,7 +749,7 @@ function Sidebar({
                         ))}
                       </>
                     )
-                    : <span className="tree-file muted">{folder === "references" ? "references.bib" : folder === "ai" ? "claims.json" : t("project.mvpFolder")}</span>}
+                    : <div className="tree-placeholder" aria-hidden="true" />}
                 </motion.div>
               )}
             </AnimatePresence>
