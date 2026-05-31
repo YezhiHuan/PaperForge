@@ -1,6 +1,6 @@
 # PaperForge
 
-Current version: `1.0.1`
+Current version: `2.0.0`
 
 PaperForge is a local-first AI manuscript writing desktop app. It organizes papers as local folders and connects Markdown sections, references, attachments, exports, and replaceable AI model settings.
 
@@ -29,7 +29,7 @@ npm run build
 npm run tauri build
 ```
 
-Lint is not configured in v1.0.1.
+Lint is not configured in v2.0.0.
 
 ## Workspace Init
 
@@ -57,7 +57,7 @@ workspace/
 
 ```json
 {
-  "version": "1.0.1",
+  "version": "2.0.0",
   "workspaceName": "workspace",
   "createdAt": "...",
   "updatedAt": "...",
@@ -126,10 +126,29 @@ workspace/
       │  ├─ word/
       │  └─ latex/
       └─ .paperforge/
-         └─ history.log
+         ├─ history.log
+         ├─ agent.log
+         ├─ agent-runs/
+         └─ backups/
 ```
 
 `paperforge.json` keeps metadata and section paths. Empty manuscript is valid; PaperForge creates `manuscript/sections/` but no fixed default sections.
+
+## Project Agent
+
+v2.0.0 adds the PaperForge Project Agent MVP. The right panel contains an Agent Panel with Ask, Edit, and Operate modes.
+
+Built-in Skills:
+
+- `ask.project-review`
+- `ask.export-readiness`
+- `edit.academic-polish`
+- `edit.translate-zh-en`
+- `operate.insert-figure`
+
+Agent file operations are limited to the current paper project folder. The safe filesystem blocks path traversal, absolute paths, `ai-models.json`, API keys, project-external files, and dangerous write targets such as `.pdf`, `.docx`, `.exe`, `.dll`, `.msi`, and `.zip`.
+
+Ask mode is read-only and returns a report. Edit and Operate modes prepare a diff first; the app writes files only after Apply. Before Apply, PaperForge creates a backup in `.paperforge/backups/` and records the run in `.paperforge/agent.log`.
 
 ## Delete Paper
 
@@ -164,17 +183,18 @@ PaperForge does not generate Zotero Word fields. Use Zotero Word plugin for fina
 
 ## Export
 
-v1.0.1 supports:
+v2.0.0 supports:
 
 - Export JSON: writes current paper config to `exports/json/paperforge.json`
 - Export Markdown: writes a package under `exports/markdown/` with `paper.md`, sections, references, attachments, claims, and `export-report.json`
 - Export Project Folder: writes a project folder snapshot under `exports/project-folder/`
+- Project Agent MVP with safe Ask / Edit / Operate workflows and built-in Skills
 
 Word and LaTeX buttons are placeholders marked Coming soon.
 
 ## UI And Theme
 
-The app title displays `PaperForge v1.0.1`.
+The app title displays `PaperForge v2.0.0`.
 
 Default theme is light. Settings can switch light, dark, or eye-care theme. Production Windows desktop builds do not show an extra terminal window.
 
@@ -198,11 +218,12 @@ workspace/.paperforge/ai-models.json
 
 The repository ignores generated workspaces and local secrets.
 
-## v1.0.1 Limits
+## v2.0.0 Limits
 
 - Direct global `paperforge` command may require `npm link` or package installation; npm scripts work from the clone.
 - File picker is not implemented; workspace/project paths can be typed.
-- AI calls remain mock/provider-abstraction; model config is persisted but providers are not fully wired.
+- Agent and AI calls remain mock/provider-abstraction; model config is persisted but providers are not fully wired.
+- Custom Skill loading, RAG, online literature search, and Skill marketplace are not implemented.
 - Word export and LaTeX export are Coming soon.
 - PDF parsing, vector search, Zotero local API, and secure OS secret storage are not implemented.
 - Project folder export is a snapshot, not a Git operation.

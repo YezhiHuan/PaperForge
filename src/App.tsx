@@ -32,6 +32,10 @@ import { createClaim, formatCitation, markdownToPreview, mergeSections, nowIso, 
 import { APP_VERSION } from "./version";
 import type {
   AIProposal,
+  AgentLogEntry,
+  AgentMode,
+  AgentRun,
+  AgentSkill,
   AppLog,
   AppSettings,
   CitationStatus,
@@ -50,7 +54,7 @@ import type {
   ThemeMode
 } from "./types";
 
-type ToolTab = "info" | "ai" | "references" | "citations" | "literature" | "claims" | "export" | "settings";
+type ToolTab = "info" | "agent" | "references" | "citations" | "literature" | "claims" | "export" | "settings";
 type Translate = (key: MessageKey) => string;
 
 const cardVariants = {
@@ -98,7 +102,7 @@ function App() {
   const [literature, setLiterature] = useState<LiteratureItem[]>([]);
   const [claims, setClaims] = useState<ClaimRecord[]>([]);
   const [logs, setLogs] = useState<AppLog[]>([]);
-  const [toolTab, setToolTab] = useState<ToolTab>("ai");
+  const [toolTab, setToolTab] = useState<ToolTab>("agent");
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [projectForm, setProjectForm] = useState(emptyProjectForm);
   const [showImportModal, setShowImportModal] = useState(false);
@@ -114,6 +118,13 @@ function App() {
   const [aiInstruction, setAiInstruction] = useState("Rewrite selected paragraph");
   const [aiLoading, setAiLoading] = useState(false);
   const [proposal, setProposal] = useState<AIProposal | null>(null);
+  const [agentMode, setAgentMode] = useState<AgentMode>("ask");
+  const [agentSkillId, setAgentSkillId] = useState("auto");
+  const [agentRequest, setAgentRequest] = useState("Review this project");
+  const [agentSkills, setAgentSkills] = useState<AgentSkill[]>([]);
+  const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
+  const [agentLogs, setAgentLogs] = useState<AgentLogEntry[]>([]);
+  const [agentLoading, setAgentLoading] = useState(false);
   const [litForm, setLitForm] = useState({ filename: "", path: "", linkedCitekey: "", notes: "" });
   const [litQuery, setLitQuery] = useState("");
   const [litSearching, setLitSearching] = useState(false);
@@ -175,12 +186,14 @@ function App() {
 
   async function selectProject(project: ProjectConfig) {
     setActiveProject(project);
-    const [loadedSections, loadedRefs, loadedTasks, loadedLit, loadedClaims] = await Promise.all([
+    const [loadedSections, loadedRefs, loadedTasks, loadedLit, loadedClaims, loadedAgentSkills, loadedAgentLogs] = await Promise.all([
       api.readSections(project.id),
       api.listReferences(project.id),
       api.scanCitationTasks(project.id),
       api.listLiterature(project.id),
-      api.listClaims(project.id)
+      api.listClaims(project.id),
+      api.listAgentSkills(project.id),
+      api.readAgentLog(project.id)
     ]);
     setSections(loadedSections);
     setActiveSectionId(loadedSections[0]?.id ?? "");
@@ -188,6 +201,9 @@ function App() {
     setCitationTasks(loadedTasks);
     setLiterature(loadedLit);
     setClaims(loadedClaims);
+    setAgentSkills(loadedAgentSkills);
+    setAgentLogs(loadedAgentLogs);
+    setAgentRun(null);
     addLog("success", `Opened ${project.title}`);
   }
 
@@ -235,6 +251,9 @@ function App() {
         setCitationTasks([]);
         setLiterature([]);
         setClaims([]);
+        setAgentSkills([]);
+        setAgentLogs([]);
+        setAgentRun(null);
       }
       addLog("warning", `Deleted paper folder: ${project.rootPath}`);
     } catch (error) {
@@ -386,6 +405,43 @@ function App() {
     setSections((current) => current.map((section) => (section.id === updated.id ? updated : section)));
     setProposal({ ...proposal, status: "applied" });
     addLog("success", "AI proposal applied. Change recorded in app log, no Git commit.");
+  }
+
+  async function runAgent() {
+    if (!activeProject) return;
+    setAgentLoading(true);
+    try {
+      const run = await api.runAgent(activeProject.id, agentMode, agentSkillId, agentRequest, activeSection?.id);
+      setAgentRun(run);
+      setAgentLogs(await api.readAgentLog(activeProject.id));
+      addLog(run.changes.length ? "info" : "success", `Agent ${run.status}: ${run.skillId}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Agent run failed.";
+      addLog("error", message);
+      window.alert(message);
+    } finally {
+      setAgentLoading(false);
+    }
+  }
+
+  async function applyAgentChange(changeId: string) {
+    if (!activeProject || !agentRun) return;
+    const run = await api.applyAgentChange(activeProject.id, agentRun.id, changeId);
+    const updatedProject = await api.readProjectConfig(activeProject.id);
+    setAgentRun(run);
+    setSections(await api.readSections(activeProject.id));
+    setActiveProject(updatedProject);
+    setProjects((current) => current.map((project) => project.id === updatedProject.id ? updatedProject : project));
+    setAgentLogs(await api.readAgentLog(activeProject.id));
+    addLog("success", "Agent change applied with backup.");
+  }
+
+  async function rejectAgentRun() {
+    if (!activeProject || !agentRun) return;
+    const run = await api.rejectAgentRun(activeProject.id, agentRun.id);
+    setAgentRun(run);
+    setAgentLogs(await api.readAgentLog(activeProject.id));
+    addLog("info", "Agent run rejected. No files changed.");
   }
 
   async function addClaimRecord() {
@@ -572,6 +628,19 @@ function App() {
             proposal={proposal}
             setProposal={setProposal}
             applyProposal={applyProposal}
+            agentMode={agentMode}
+            setAgentMode={setAgentMode}
+            agentSkillId={agentSkillId}
+            setAgentSkillId={setAgentSkillId}
+            agentRequest={agentRequest}
+            setAgentRequest={setAgentRequest}
+            agentSkills={agentSkills}
+            agentRun={agentRun}
+            agentLogs={agentLogs}
+            agentLoading={agentLoading}
+            runAgent={runAgent}
+            applyAgentChange={applyAgentChange}
+            rejectAgentRun={rejectAgentRun}
             claims={claims}
             claimText={claimText}
             setClaimText={setClaimText}
@@ -835,6 +904,19 @@ function RightPanel(props: {
   proposal: AIProposal | null;
   setProposal: (proposal: AIProposal | null) => void;
   applyProposal: () => void;
+  agentMode: AgentMode;
+  setAgentMode: (mode: AgentMode) => void;
+  agentSkillId: string;
+  setAgentSkillId: (skillId: string) => void;
+  agentRequest: string;
+  setAgentRequest: (request: string) => void;
+  agentSkills: AgentSkill[];
+  agentRun: AgentRun | null;
+  agentLogs: AgentLogEntry[];
+  agentLoading: boolean;
+  runAgent: () => void;
+  applyAgentChange: (changeId: string) => void;
+  rejectAgentRun: () => void;
   claims: ClaimRecord[];
   claimText: string;
   setClaimText: (value: string) => void;
@@ -855,7 +937,7 @@ function RightPanel(props: {
 }) {
   const tabs: Array<[ToolTab, string, ReactNode]> = [
     ["info", props.t("project.projectInfo"), <FileText size={14} />],
-    ["ai", "AI", <Brain size={14} />],
+    ["agent", "Agent", <Brain size={14} />],
     ["references", "Refs", <BookOpen size={14} />],
     ["citations", "Cites", <Clipboard size={14} />],
     ["literature", "Library", <Library size={14} />],
@@ -876,7 +958,7 @@ function RightPanel(props: {
       <AnimatePresence mode="wait">
         <motion.div key={props.tab} variants={panelVariants} initial="hidden" animate="show" exit="exit" className="tool-body">
           {props.tab === "info" && <ProjectInfoTool {...props} />}
-          {props.tab === "ai" && <AiTool {...props} />}
+          {props.tab === "agent" && <AgentTool {...props} />}
           {props.tab === "references" && <ReferenceTool {...props} />}
           {props.tab === "citations" && <CitationTool {...props} />}
           {props.tab === "literature" && <LiteratureTool {...props} />}
@@ -931,6 +1013,106 @@ function ProjectInfoTool(props: Parameters<typeof RightPanel>[0]) {
           </select>
         </label>
       </div>
+    </>
+  );
+}
+
+function AgentTool(props: Parameters<typeof RightPanel>[0]) {
+  const filteredSkills = props.agentSkills.filter((skill) => skill.type === props.agentMode);
+  const pendingChanges = props.agentRun?.changes.filter((change) => change.status === "pending") ?? [];
+
+  return (
+    <>
+      <h2>Agent Panel</h2>
+      <div className="agent-summary">
+        <span className="mode-chip">Project</span>
+        <strong>{displayTitle(props.project.title, props.language)}</strong>
+        <small>{props.project.rootPath}</small>
+      </div>
+
+      <div className="stack">
+        <label>
+          Mode
+          <select value={props.agentMode} onChange={(event) => { props.setAgentMode(event.target.value as AgentMode); props.setAgentSkillId("auto"); }}>
+            <option value="ask">Ask</option>
+            <option value="edit">Edit</option>
+            <option value="operate">Operate</option>
+          </select>
+        </label>
+        <label>
+          Skill
+          <select value={props.agentSkillId} onChange={(event) => props.setAgentSkillId(event.target.value)}>
+            <option value="auto">Auto</option>
+            {filteredSkills.map((skill) => <option value={skill.id} key={skill.id}>{skill.name}</option>)}
+          </select>
+        </label>
+        <label>
+          User request
+          <textarea className="small-area" value={props.agentRequest} onChange={(event) => props.setAgentRequest(event.target.value)} />
+        </label>
+      </div>
+
+      <button className="primary-btn wide" disabled={props.agentLoading} onClick={props.runAgent}>
+        {props.agentLoading ? <Loader2 className="spin" size={15} /> : <Sparkles size={15} />} Run Agent
+      </button>
+
+      {props.agentRun && (
+        <div className="agent-run">
+          <div className="proposal-card">
+            <span className={`status ${props.agentRun.status}`}>{props.agentRun.status}</span>
+            <strong>{props.agentRun.skillId}</strong>
+            <p>{props.agentRun.report}</p>
+          </div>
+
+          <details open>
+            <summary>Agent Plan</summary>
+            <div className="agent-list">
+              <strong>{props.agentRun.plan.summary}</strong>
+              {props.agentRun.plan.steps.map((step) => <span key={step}>{step}</span>)}
+            </div>
+          </details>
+
+          <details>
+            <summary>Files Read</summary>
+            <pre>{props.agentRun.filesRead.join("\n") || "None"}</pre>
+          </details>
+
+          <details open={pendingChanges.length > 0}>
+            <summary>Files To Change</summary>
+            <pre>{props.agentRun.plan.filesToChange.join("\n") || "None"}</pre>
+          </details>
+
+          {props.agentRun.changes.map((change) => (
+            <div className="proposal-card" key={change.id}>
+              <span className={`status ${change.status}`}>{change.status}</span>
+              <strong>{change.path}</strong>
+              <pre className="diff-preview">{change.diff}</pre>
+              {change.status === "pending" && (
+                <div className="row-actions">
+                  <button onClick={() => props.applyAgentChange(change.id)}>Apply</button>
+                  <button onClick={props.rejectAgentRun}>Reject</button>
+                  <button onClick={() => navigator.clipboard?.writeText(change.diff)}>Copy diff</button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <details>
+        <summary>Agent Log</summary>
+        <div className="card-list">
+          {props.agentLogs.length === 0 && <div className="validation-card info"><span>No Agent runs yet.</span></div>}
+          {props.agentLogs.map((entry) => (
+            <div className="task-card" key={entry.id}>
+              <span className={`status ${entry.success ? "success" : "failed"}`}>{entry.success ? "success" : "failed"}</span>
+              <strong>{entry.skillId}</strong>
+              <p>{entry.request}</p>
+              <small>{entry.mode} · {entry.createdAt}</small>
+            </div>
+          ))}
+        </div>
+      </details>
     </>
   );
 }

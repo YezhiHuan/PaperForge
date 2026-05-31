@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.0.0
+
+- Added Project Agent MVP with Ask, Edit, and Operate modes
+- Added built-in Agent Skills for project review, export readiness, academic polish, ZH-EN translation, and figure insertion
+- Added safe project filesystem boundaries for Agent file access
+- Added diff-first Agent changes with Apply / Reject flow
+- Added per-paper `.paperforge/agent.log`, pending Agent run records, and Apply backups
+- Updated app version and title to PaperForge v2.0.0
+- Ignored local `doc/` planning files
+
 ## v1.0.1
 
 - Delete paper now removes the actual paper folder from the workspace
