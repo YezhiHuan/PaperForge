@@ -103,3 +103,4 @@
 - New i18n keys: `actions.literature`, `actions.references`, `actions.clearChat`, `actions.send`, `actions.thinking`, `actions.advancedSkill` (en + zh).
 - `agent-subtitle`, `agent-chat-window`, `agent-bubble`, `agent-tool-list`, `agent-args`, `agent-trace-summary`, `agent-chat-input`, `topbar-actions`, `chip`, `chip-row` styles for the new agent UI and top bar.
 - APP_VERSION, Cargo crate version, `tauri.conf.json` `version`, and `tauri.conf.json` window `title` all bumped to `PaperForge v2.2.1`.
+- Aligned `package.json` `version` with `PaperForge v2.2.1`; it had been left at `2.2.0` in the v2.2.0 bump.
