@@ -16,9 +16,9 @@ The source repository must ignore `workspace/`.
 
 ## Current Release Rules
 
-- Current product version is `1.0.1`.
+- Current product version is `2.0.0`.
 - App name is `PaperForge`.
-- App title must show `PaperForge v1.0.1`.
+- App title must show `PaperForge v2.0.0`.
 - Every source change must update `CHANGELOG.md`.
 - User-facing feature changes must update `README.md`.
 - `npm run tauri dev` and `npm run tauri:dev` must remain runnable.

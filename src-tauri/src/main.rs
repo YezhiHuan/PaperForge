@@ -99,7 +99,7 @@ fn default_project_title() -> String {
 }
 
 fn default_project_version() -> String {
-    "1.0.1".to_string()
+    "2.0.0".to_string()
 }
 
 fn default_target_journal() -> String {
@@ -329,6 +329,122 @@ struct AppLog {
     created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum AgentMode {
+    Ask,
+    Edit,
+    Operate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum AgentRunStatus {
+    Planned,
+    Completed,
+    Applied,
+    Rejected,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum AgentChangeStatus {
+    Pending,
+    Applied,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum AgentFileChangeType {
+    Create,
+    Update,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentSkill {
+    id: String,
+    name: String,
+    #[serde(rename = "type")]
+    skill_type: AgentMode,
+    description: String,
+    allowed_tools: Vec<String>,
+    requires_diff: bool,
+    requires_confirmation: bool,
+    writes_files: bool,
+    risk_level: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentPlan {
+    summary: String,
+    steps: Vec<String>,
+    files_to_read: Vec<String>,
+    files_to_change: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentFileChange {
+    id: String,
+    path: String,
+    change_type: AgentFileChangeType,
+    original_content: String,
+    proposed_content: String,
+    diff: String,
+    status: AgentChangeStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentToolResult {
+    tool: String,
+    ok: bool,
+    message: String,
+    data: Option<serde_json::Value>,
+    error: Option<String>,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentRun {
+    id: String,
+    project_id: String,
+    mode: AgentMode,
+    skill_id: String,
+    request: String,
+    status: AgentRunStatus,
+    plan: AgentPlan,
+    files_read: Vec<String>,
+    files_changed: Vec<String>,
+    report: String,
+    changes: Vec<AgentFileChange>,
+    tool_results: Vec<AgentToolResult>,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentLogEntry {
+    id: String,
+    run_id: String,
+    project_id: String,
+    mode: AgentMode,
+    skill_id: String,
+    request: String,
+    tools: Vec<String>,
+    files_read: Vec<String>,
+    files_changed: Vec<String>,
+    success: bool,
+    error: Option<String>,
+    created_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum ProjectActivityType {
@@ -441,6 +557,90 @@ fn app_logs_path() -> Result<PathBuf, String> {
     Ok(local_dir()?.join("app_logs.json"))
 }
 
+fn built_in_agent_skills() -> Vec<AgentSkill> {
+    vec![
+        AgentSkill {
+            id: "ask.project-review".to_string(),
+            name: "Project Review".to_string(),
+            skill_type: AgentMode::Ask,
+            description: "Review project structure, manuscript sections, references, and attachments without changing files.".to_string(),
+            allowed_tools: vec!["list_project_files", "list_sections", "list_figures", "check_broken_links", "write_agent_log"].into_iter().map(String::from).collect(),
+            requires_diff: false,
+            requires_confirmation: false,
+            writes_files: false,
+            risk_level: "low".to_string(),
+        },
+        AgentSkill {
+            id: "ask.export-readiness".to_string(),
+            name: "Export Readiness".to_string(),
+            skill_type: AgentMode::Ask,
+            description: "Check whether the current manuscript is ready for Markdown, Word placeholder, or LaTeX export.".to_string(),
+            allowed_tools: vec!["list_project_files", "list_sections", "check_broken_links", "write_agent_log"].into_iter().map(String::from).collect(),
+            requires_diff: false,
+            requires_confirmation: false,
+            writes_files: false,
+            risk_level: "low".to_string(),
+        },
+        AgentSkill {
+            id: "edit.academic-polish".to_string(),
+            name: "Academic Polish".to_string(),
+            skill_type: AgentMode::Edit,
+            description: "Improve academic style while preserving technical meaning, citations, and numbers.".to_string(),
+            allowed_tools: vec!["read_project_file", "patch_project_file", "write_agent_log"].into_iter().map(String::from).collect(),
+            requires_diff: true,
+            requires_confirmation: true,
+            writes_files: true,
+            risk_level: "medium".to_string(),
+        },
+        AgentSkill {
+            id: "edit.translate-zh-en".to_string(),
+            name: "Translate ZH-EN".to_string(),
+            skill_type: AgentMode::Edit,
+            description: "Translate or bilingual-polish the active section while preserving citations and technical details.".to_string(),
+            allowed_tools: vec!["read_project_file", "patch_project_file", "write_agent_log"].into_iter().map(String::from).collect(),
+            requires_diff: true,
+            requires_confirmation: true,
+            writes_files: true,
+            risk_level: "medium".to_string(),
+        },
+        AgentSkill {
+            id: "operate.insert-figure".to_string(),
+            name: "Insert Figure".to_string(),
+            skill_type: AgentMode::Operate,
+            description: "Prepare a safe Markdown figure insertion using files under attachments/figures.".to_string(),
+            allowed_tools: vec!["list_figures", "read_project_file", "patch_project_file", "write_agent_log"].into_iter().map(String::from).collect(),
+            requires_diff: true,
+            requires_confirmation: true,
+            writes_files: true,
+            risk_level: "medium".to_string(),
+        },
+    ]
+}
+
+fn select_agent_skill(mode: &AgentMode, skill_id: &str, request: &str) -> AgentSkill {
+    let skills = built_in_agent_skills();
+    if !skill_id.trim().is_empty() && skill_id != "auto" {
+        if let Some(skill) = skills.iter().find(|skill| skill.id == skill_id) {
+            return skill.clone();
+        }
+    }
+    let request = request.to_lowercase();
+    if matches!(mode, AgentMode::Ask)
+        && (request.contains("export") || request.contains("word") || request.contains("latex") || request.contains("markdown") || request.contains("导出"))
+    {
+        return skills.into_iter().find(|skill| skill.id == "ask.export-readiness").unwrap();
+    }
+    if matches!(mode, AgentMode::Edit)
+        && (request.contains("translate") || request.contains("translation") || request.contains("翻译") || request.contains("中文") || request.contains("英文"))
+    {
+        return skills.into_iter().find(|skill| skill.id == "edit.translate-zh-en").unwrap();
+    }
+    skills
+        .into_iter()
+        .find(|skill| &skill.skill_type == mode)
+        .unwrap_or_else(|| built_in_agent_skills()[0].clone())
+}
+
 fn safe_folder_name(title: &str) -> String {
     let cleaned: String = title
         .chars()
@@ -453,6 +653,18 @@ fn safe_folder_name(title: &str) -> String {
         "Paper_Project".to_string()
     } else {
         collapsed
+    }
+}
+
+fn safe_filename(value: &str) -> String {
+    let cleaned: String = value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+        .collect();
+    if cleaned.is_empty() {
+        "item".to_string()
+    } else {
+        cleaned
     }
 }
 
@@ -483,7 +695,7 @@ fn default_settings() -> AppSettings {
 fn default_workspace_config(existing: Option<WorkspaceConfig>) -> WorkspaceConfig {
     let timestamp = now_iso();
     WorkspaceConfig {
-        version: "1.0.1".to_string(),
+        version: "2.0.0".to_string(),
         workspace_name: existing
             .as_ref()
             .map(|value| value.workspace_name.clone())
@@ -614,6 +826,22 @@ fn activity_path(root: &Path) -> PathBuf {
 
 fn paper_history_path(root: &Path) -> PathBuf {
     root.join(".paperforge/history.log")
+}
+
+fn agent_log_path(root: &Path) -> PathBuf {
+    root.join(".paperforge/agent.log")
+}
+
+fn agent_run_dir(root: &Path) -> PathBuf {
+    root.join(".paperforge/agent-runs")
+}
+
+fn agent_run_path(root: &Path, run_id: &str) -> PathBuf {
+    agent_run_dir(root).join(format!("{}.json", safe_filename(run_id)))
+}
+
+fn agent_backup_dir(root: &Path) -> PathBuf {
+    root.join(".paperforge/backups")
 }
 
 fn project_manifest_path(root: &Path) -> PathBuf {
@@ -846,6 +1074,9 @@ fn ensure_structure(project: &ProjectConfig) -> Result<(), String> {
     write_if_missing(&root.join(".paperforge/claims.json"), b"[]")?;
     write_if_missing(&activity_path(&root), b"[]")?;
     write_if_missing(&paper_history_path(&root), b"")?;
+    fs::create_dir_all(agent_run_dir(&root)).map_err(|err| err.to_string())?;
+    fs::create_dir_all(agent_backup_dir(&root)).map_err(|err| err.to_string())?;
+    write_if_missing(&agent_log_path(&root), b"")?;
     for manifest in &project.manuscript.sections {
         let path = root.join(&manifest.path);
         let content = format!("## {}\n\n", manifest.title);
@@ -875,6 +1106,132 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
         serde_json::to_string_pretty(value).map_err(|err| err.to_string())?,
     )
     .map_err(|err| err.to_string())
+}
+
+struct ProjectFileSystem {
+    root: PathBuf,
+    canonical_root: PathBuf,
+}
+
+impl ProjectFileSystem {
+    fn new(project: &ProjectConfig) -> Result<Self, String> {
+        let root = PathBuf::from(&project.root_path);
+        fs::create_dir_all(&root).map_err(|err| err.to_string())?;
+        let canonical_root = root.canonicalize().map_err(|err| err.to_string())?;
+        Ok(Self { root, canonical_root })
+    }
+
+    fn clean_relative_path(&self, path: &str) -> Result<String, String> {
+        let clean = path.trim().replace('\\', "/");
+        if clean.is_empty() {
+            return Err("Project path is required.".to_string());
+        }
+        if clean.to_lowercase().contains("ai-models.json") {
+            return Err("Agent cannot read or write AI model configuration or API keys.".to_string());
+        }
+        let candidate = Path::new(&clean);
+        if candidate.is_absolute() {
+            return Err("Absolute paths are not allowed for Agent file operations.".to_string());
+        }
+        for component in candidate.components() {
+            match component {
+                std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                    return Err("Path traversal outside the current project is not allowed.".to_string())
+                }
+                _ => {}
+            }
+        }
+        Ok(clean)
+    }
+
+    fn validate_extension(path: &str, allowed: &[&str]) -> Result<(), String> {
+        let ext = Path::new(path)
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| format!(".{}", value.to_ascii_lowercase()))
+            .unwrap_or_default();
+        if allowed.iter().any(|allowed_ext| *allowed_ext == ext) {
+            Ok(())
+        } else {
+            Err(format!("File type is not allowed for Agent operation: {}", ext))
+        }
+    }
+
+    fn project_path(&self, path: &str) -> Result<PathBuf, String> {
+        let clean = self.clean_relative_path(path)?;
+        Ok(self.root.join(clean))
+    }
+
+    fn canonical_existing_path(&self, path: &str) -> Result<PathBuf, String> {
+        let target = self.project_path(path)?;
+        let canonical = target.canonicalize().map_err(|err| err.to_string())?;
+        if !canonical.starts_with(&self.canonical_root) {
+            return Err("Resolved path is outside the current project root.".to_string());
+        }
+        Ok(canonical)
+    }
+
+    fn read_project_file(&self, path: &str) -> Result<String, String> {
+        Self::validate_extension(path, &[".md", ".txt", ".json", ".bib", ".tex", ".yaml", ".yml", ".csv"])?;
+        let target = self.canonical_existing_path(path)?;
+        fs::read_to_string(target).map_err(|err| err.to_string())
+    }
+
+    fn write_project_file(&self, path: &str, content: &str) -> Result<(), String> {
+        Self::validate_extension(path, &[".md", ".txt", ".json", ".bib", ".tex", ".yaml", ".yml"])?;
+        let target = self.project_path(path)?;
+        let parent = target.parent().ok_or_else(|| "Target path has no parent.".to_string())?;
+        let canonical_parent = parent.canonicalize().map_err(|err| err.to_string())?;
+        if !canonical_parent.starts_with(&self.canonical_root) {
+            return Err("Resolved write path is outside the current project root.".to_string());
+        }
+        fs::write(target, content).map_err(|err| err.to_string())
+    }
+
+    fn list_project_files(&self) -> Result<Vec<String>, String> {
+        let mut files = vec![];
+        self.collect_files(&self.root, &mut files)?;
+        files.sort();
+        Ok(files)
+    }
+
+    fn collect_files(&self, dir: &Path, files: &mut Vec<String>) -> Result<(), String> {
+        if !dir.exists() {
+            return Ok(());
+        }
+        for entry in fs::read_dir(dir).map_err(|err| err.to_string())? {
+            let entry = entry.map_err(|err| err.to_string())?;
+            let path = entry.path();
+            if path.is_dir() {
+                self.collect_files(&path, files)?;
+            } else if let Ok(relative) = path.strip_prefix(&self.root) {
+                let value = relative.to_string_lossy().replace('\\', "/");
+                if !value.to_lowercase().contains("ai-models.json") {
+                    files.push(value);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn list_figures(&self) -> Result<Vec<String>, String> {
+        let dir = self.root.join("attachments/figures");
+        let mut figures = vec![];
+        if !dir.exists() {
+            return Ok(figures);
+        }
+        for entry in fs::read_dir(dir).map_err(|err| err.to_string())? {
+            let entry = entry.map_err(|err| err.to_string())?;
+            let path = entry.path();
+            if path.is_file() {
+                if let Ok(relative) = path.strip_prefix(&self.root) {
+                    figures.push(relative.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+        figures.sort();
+        Ok(figures)
+    }
 }
 
 #[tauri::command]
@@ -924,6 +1281,360 @@ fn append_project_activity(
         .write_all(line.as_bytes())
         .map_err(|err| err.to_string())?;
     Ok(activities)
+}
+
+fn agent_tool_result(tool: &str, ok: bool, message: &str) -> AgentToolResult {
+    AgentToolResult {
+        tool: tool.to_string(),
+        ok,
+        message: message.to_string(),
+        data: None,
+        error: None,
+        reason: None,
+    }
+}
+
+fn make_simple_diff(path: &str, original: &str, proposed: &str) -> String {
+    if original == proposed {
+        return format!("--- {}\n+++ {}\n(no changes)", path, path);
+    }
+    let before: Vec<&str> = original.split('\n').collect();
+    let after: Vec<&str> = proposed.split('\n').collect();
+    let mut lines = vec![format!("--- {}", path), format!("+++ {}", path)];
+    let max = before.len().max(after.len());
+    for index in 0..max {
+        match (before.get(index), after.get(index)) {
+            (Some(left), Some(right)) if left == right => lines.push(format!(" {}", left)),
+            (Some(left), Some(right)) => {
+                lines.push(format!("-{}", left));
+                lines.push(format!("+{}", right));
+            }
+            (Some(left), None) => lines.push(format!("-{}", left)),
+            (None, Some(right)) => lines.push(format!("+{}", right)),
+            (None, None) => {}
+        }
+    }
+    lines.join("\n")
+}
+
+fn agent_change(path: &str, original: String, proposed: String) -> AgentFileChange {
+    AgentFileChange {
+        id: format!("agent_change_{}", Uuid::new_v4()),
+        path: path.to_string(),
+        change_type: if original.is_empty() {
+            AgentFileChangeType::Create
+        } else {
+            AgentFileChangeType::Update
+        },
+        diff: make_simple_diff(path, &original, &proposed),
+        original_content: original,
+        proposed_content: proposed,
+        status: AgentChangeStatus::Pending,
+    }
+}
+
+fn write_agent_run(project: &ProjectConfig, run: &AgentRun) -> Result<(), String> {
+    let root = PathBuf::from(&project.root_path);
+    fs::create_dir_all(agent_run_dir(&root)).map_err(|err| err.to_string())?;
+    write_json(&agent_run_path(&root, &run.id), run)
+}
+
+fn read_agent_run(project: &ProjectConfig, run_id: &str) -> Result<AgentRun, String> {
+    let root = PathBuf::from(&project.root_path);
+    let path = agent_run_path(&root, run_id);
+    if !path.exists() {
+        return Err("Agent run not found".to_string());
+    }
+    let raw = fs::read_to_string(path).map_err(|err| err.to_string())?;
+    serde_json::from_str(&raw).map_err(|err| err.to_string())
+}
+
+fn append_agent_log_entry(project: &ProjectConfig, run: &AgentRun, success: bool, error: Option<String>) -> Result<(), String> {
+    let root = PathBuf::from(&project.root_path);
+    fs::create_dir_all(root.join(".paperforge")).map_err(|err| err.to_string())?;
+    let entry = AgentLogEntry {
+        id: format!("agent_log_{}", Uuid::new_v4()),
+        run_id: run.id.clone(),
+        project_id: run.project_id.clone(),
+        mode: run.mode.clone(),
+        skill_id: run.skill_id.clone(),
+        request: run.request.clone(),
+        tools: run.tool_results.iter().map(|tool| tool.tool.clone()).collect(),
+        files_read: run.files_read.clone(),
+        files_changed: run.files_changed.clone(),
+        success,
+        error,
+        created_at: now_iso(),
+    };
+    use std::io::Write;
+    let mut log = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(agent_log_path(&root))
+        .map_err(|err| err.to_string())?;
+    let line = serde_json::to_string(&entry).map_err(|err| err.to_string())?;
+    log.write_all(format!("{}\n", line).as_bytes())
+        .map_err(|err| err.to_string())
+}
+
+fn read_agent_log_entries(project: &ProjectConfig) -> Result<Vec<AgentLogEntry>, String> {
+    let root = PathBuf::from(&project.root_path);
+    let path = agent_log_path(&root);
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let raw = fs::read_to_string(path).map_err(|err| err.to_string())?;
+    let mut entries = vec![];
+    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+        if let Ok(entry) = serde_json::from_str::<AgentLogEntry>(line) {
+            entries.push(entry);
+        }
+    }
+    entries.reverse();
+    entries.truncate(80);
+    Ok(entries)
+}
+
+fn check_broken_links(project: &ProjectConfig, sections: &[ManuscriptSection]) -> Result<Vec<String>, String> {
+    let root = PathBuf::from(&project.root_path);
+    let link_pattern = Regex::new(r"!\[[^\]]*\]\(([^)]+)\)|\[[^\]]+\]\(([^)]+)\)").map_err(|err| err.to_string())?;
+    let mut broken = vec![];
+    for section in sections {
+        for capture in link_pattern.captures_iter(&section.content) {
+            let target = capture.get(1).or_else(|| capture.get(2)).map(|value| value.as_str()).unwrap_or("");
+            if target.starts_with("http://") || target.starts_with("https://") || target.starts_with('#') || target.trim().is_empty() {
+                continue;
+            }
+            if target.contains("..") || Path::new(target).is_absolute() {
+                broken.push(format!("{} -> {}", section.path, target));
+                continue;
+            }
+            if !root.join(target).exists() {
+                broken.push(format!("{} -> {}", section.path, target));
+            }
+        }
+    }
+    Ok(broken)
+}
+
+fn sync_project_after_agent_write(project: &ProjectConfig, changed_path: &str) -> Result<(), String> {
+    let mut project = project.clone();
+    let timestamp = now_iso();
+    for section in &mut project.manuscript.sections {
+        if section.path == changed_path {
+            section.updated_at = timestamp.clone();
+        }
+    }
+    for section in &mut project.sections {
+        if section.path == changed_path {
+            section.updated_at = timestamp.clone();
+        }
+    }
+    project.updated_at = timestamp;
+    let root = PathBuf::from(&project.root_path);
+    write_json(&project_manifest_path(&root), &project)?;
+    write_json(&compatibility_project_manifest_path(&root), &project)?;
+    let mut projects = read_registry()?;
+    projects = projects
+        .into_iter()
+        .map(|item| if item.id == project.id { project.clone() } else { item })
+        .collect();
+    write_registry(&projects)
+}
+
+#[tauri::command]
+fn list_agent_skills(_project_id: String) -> Result<Vec<AgentSkill>, String> {
+    Ok(built_in_agent_skills())
+}
+
+#[tauri::command]
+fn run_agent(
+    project_id: String,
+    mode: AgentMode,
+    skill_id: String,
+    request: String,
+    section_id: Option<String>,
+) -> Result<AgentRun, String> {
+    let project = project_by_id(&project_id)?;
+    ensure_structure(&project)?;
+    let pfs = ProjectFileSystem::new(&project)?;
+    let skill = select_agent_skill(&mode, &skill_id, &request);
+    let sections = list_sections(project_id.clone())?;
+    let selected_section = section_id
+        .as_ref()
+        .and_then(|id| sections.iter().find(|section| &section.id == id))
+        .or_else(|| sections.first());
+    let timestamp = now_iso();
+    let mut files_read = vec![];
+    let mut files_to_change = vec![];
+    let mut changes = vec![];
+    let mut report = String::new();
+    let mut tool_results = skill
+        .allowed_tools
+        .iter()
+        .map(|tool| agent_tool_result(tool, true, "Tool registered."))
+        .collect::<Vec<_>>();
+
+    match &mode {
+        AgentMode::Ask => {
+            let files = pfs.list_project_files()?;
+            let figures = pfs.list_figures()?;
+            let broken = check_broken_links(&project, &sections)?;
+            files_read.push("paperforge.json".to_string());
+            files_read.extend(sections.iter().map(|section| section.path.clone()));
+            report = format!(
+                "{} completed.\nProject: {}\nFiles: {}\nSections: {}\nFigures: {}\nBroken links: {}\nNo files modified.",
+                skill.name.clone(),
+                project.title,
+                files.len(),
+                sections.len(),
+                figures.len(),
+                if broken.is_empty() { "none".to_string() } else { broken.join(", ") }
+            );
+            tool_results.push(AgentToolResult {
+                tool: "check_broken_links".to_string(),
+                ok: broken.is_empty(),
+                message: format!("{} broken link(s).", broken.len()),
+                data: Some(serde_json::json!(broken)),
+                error: None,
+                reason: None,
+            });
+        }
+        AgentMode::Edit => {
+            if let Some(section) = selected_section {
+                files_read.push(section.path.clone());
+                let original = pfs.read_project_file(&section.path)?;
+                let prefix = if skill.id == "edit.translate-zh-en" {
+                    "Translation/polish draft"
+                } else {
+                    "Academic polish draft"
+                };
+                let proposed = format!(
+                    "{}\n\n> {}: provider abstraction ready. Review wording, preserve citations, and apply only if acceptable.\n",
+                    original.trim_end(),
+                    prefix
+                );
+                files_to_change.push(section.path.clone());
+                changes.push(agent_change(&section.path, original, proposed));
+                report = format!("{} prepared a diff for {}. Review before applying.", skill.name.clone(), section.title);
+            } else {
+                report = "No active section found. Create a section before using Edit mode.".to_string();
+            }
+        }
+        AgentMode::Operate => {
+            if let Some(section) = selected_section {
+                files_read.push(section.path.clone());
+                files_read.push("attachments/figures".to_string());
+                let figure_pattern = Regex::new(r"attachments/figures/[^\s)]+").map_err(|err| err.to_string())?;
+                let figure_path = figure_pattern
+                    .find(&request)
+                    .map(|value| value.as_str().trim().to_string())
+                    .or_else(|| pfs.list_figures().ok().and_then(|figures| figures.first().cloned()));
+                if let Some(figure_path) = figure_path {
+                    if !figure_path.replace('\\', "/").starts_with("attachments/figures/") {
+                        report = "Insert Figure refused path outside attachments/figures.".to_string();
+                    } else {
+                        let _ = pfs.canonical_existing_path(&figure_path)?;
+                        let original = pfs.read_project_file(&section.path)?;
+                        let proposed = format!("{}\n\n![Figure caption]({})\n", original.trim_end(), figure_path);
+                        files_to_change.push(section.path.clone());
+                        changes.push(agent_change(&section.path, original, proposed));
+                        report = "Insert Figure prepared a Markdown image reference for the active section.".to_string();
+                    }
+                } else {
+                    report = "No figure path found. Put a figure under attachments/figures and mention its path.".to_string();
+                }
+            } else {
+                report = "No active section found. Create a section before using Operate mode.".to_string();
+            }
+        }
+    }
+
+    let run = AgentRun {
+        id: format!("agent_run_{}", Uuid::new_v4()),
+        project_id: project_id.clone(),
+        mode,
+        skill_id: skill.id.clone(),
+        request: request.clone(),
+        status: if changes.is_empty() {
+            AgentRunStatus::Completed
+        } else {
+            AgentRunStatus::Planned
+        },
+        plan: AgentPlan {
+            summary: format!("{}: {}", skill.name.clone(), if request.trim().is_empty() { "No request text provided." } else { request.trim() }),
+            steps: if skill.writes_files {
+                vec!["Read safe project context".to_string(), "Prepare diff".to_string(), "Wait for Apply or Reject".to_string()]
+            } else {
+                vec!["Inspect safe project context".to_string(), "Run read-only checks".to_string(), "Return report".to_string()]
+            },
+            files_to_read: files_read.clone(),
+            files_to_change,
+        },
+        files_read,
+        files_changed: vec![],
+        report,
+        changes,
+        tool_results,
+        created_at: timestamp.clone(),
+        updated_at: timestamp,
+    };
+    write_agent_run(&project, &run)?;
+    append_agent_log_entry(&project, &run, true, None)?;
+    Ok(run)
+}
+
+#[tauri::command]
+fn apply_agent_change(project_id: String, run_id: String, change_id: String) -> Result<AgentRun, String> {
+    let project = project_by_id(&project_id)?;
+    let pfs = ProjectFileSystem::new(&project)?;
+    let mut run = read_agent_run(&project, &run_id)?;
+    let change_index = run
+        .changes
+        .iter()
+        .position(|change| change.id == change_id)
+        .ok_or_else(|| "Agent change not found".to_string())?;
+    let change = run.changes[change_index].clone();
+    let current = pfs.read_project_file(&change.path)?;
+    let root = PathBuf::from(&project.root_path);
+    fs::create_dir_all(agent_backup_dir(&root)).map_err(|err| err.to_string())?;
+    let backup_name = format!(
+        "{}_{}.bak",
+        now_iso().replace(':', "-").replace('.', "-"),
+        safe_filename(&change.path.replace('/', "_"))
+    );
+    fs::write(agent_backup_dir(&root).join(backup_name), current).map_err(|err| err.to_string())?;
+    pfs.write_project_file(&change.path, &change.proposed_content)?;
+    run.changes[change_index].status = AgentChangeStatus::Applied;
+    if !run.files_changed.contains(&change.path) {
+        run.files_changed.push(change.path.clone());
+    }
+    run.status = AgentRunStatus::Applied;
+    run.updated_at = now_iso();
+    write_agent_run(&project, &run)?;
+    sync_project_after_agent_write(&project, &change.path)?;
+    append_agent_log_entry(&project, &run, true, None)?;
+    Ok(run)
+}
+
+#[tauri::command]
+fn reject_agent_run(project_id: String, run_id: String) -> Result<AgentRun, String> {
+    let project = project_by_id(&project_id)?;
+    let mut run = read_agent_run(&project, &run_id)?;
+    run.status = AgentRunStatus::Rejected;
+    run.updated_at = now_iso();
+    for change in &mut run.changes {
+        change.status = AgentChangeStatus::Rejected;
+    }
+    write_agent_run(&project, &run)?;
+    append_agent_log_entry(&project, &run, true, None)?;
+    Ok(run)
+}
+
+#[tauri::command]
+fn read_agent_log(project_id: String) -> Result<Vec<AgentLogEntry>, String> {
+    let project = project_by_id(&project_id)?;
+    read_agent_log_entries(&project)
 }
 
 #[tauri::command]
@@ -2141,6 +2852,11 @@ pub fn run() {
             save_settings,
             generate_ai_proposal,
             apply_ai_proposal,
+            list_agent_skills,
+            run_agent,
+            apply_agent_change,
+            reject_agent_run,
+            read_agent_log,
             read_app_logs,
             append_app_log,
             open_path
@@ -2403,7 +3119,7 @@ mod tests {
     fn default_workspace_init_uses_workspace_and_light_settings() {
         with_temp_cwd("workspace_init", |dir| {
             let config = init_workspace(String::new()).expect("workspace");
-            assert_eq!(config.version, "1.0.1");
+            assert_eq!(config.version, "2.0.0");
             assert_eq!(config.workspace_name, "workspace");
             let root = dir.join("workspace");
             assert!(root.join("papers").exists());

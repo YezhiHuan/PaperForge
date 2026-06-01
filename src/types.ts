@@ -13,6 +13,10 @@ export type SectionNamingMode = "numbered" | "slugOnly";
 export type SectionTemplateId = "empty" | "standard" | "engineeringSimulation" | "review";
 export type SectionStatus = "draft" | "review" | "done";
 export type ProjectActivityType = "section.created" | "section.renamed" | "section.updated";
+export type AgentMode = "ask" | "edit" | "operate";
+export type AgentRunStatus = "planned" | "completed" | "applied" | "rejected" | "failed";
+export type AgentChangeStatus = "pending" | "applied" | "rejected";
+export type AgentSkillType = AgentMode;
 
 export interface ManuscriptManifestSection {
   id: string;
@@ -127,6 +131,76 @@ export interface AIProposal {
   citationKeys: string[];
   createdAt: string;
   status: ProposalStatus;
+}
+
+export interface AgentSkill {
+  id: string;
+  name: string;
+  type: AgentSkillType;
+  description: string;
+  allowedTools: string[];
+  requiresDiff: boolean;
+  requiresConfirmation: boolean;
+  writesFiles: boolean;
+  riskLevel: "low" | "medium" | "high";
+}
+
+export interface AgentPlan {
+  summary: string;
+  steps: string[];
+  filesToRead: string[];
+  filesToChange: string[];
+}
+
+export interface AgentFileChange {
+  id: string;
+  path: string;
+  changeType: "create" | "update";
+  originalContent: string;
+  proposedContent: string;
+  diff: string;
+  status: AgentChangeStatus;
+}
+
+export interface AgentToolResult {
+  tool: string;
+  ok: boolean;
+  message: string;
+  data?: unknown;
+  error?: string;
+  reason?: string;
+}
+
+export interface AgentRun {
+  id: string;
+  projectId: string;
+  mode: AgentMode;
+  skillId: string;
+  request: string;
+  status: AgentRunStatus;
+  plan: AgentPlan;
+  filesRead: string[];
+  filesChanged: string[];
+  report: string;
+  changes: AgentFileChange[];
+  toolResults: AgentToolResult[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentLogEntry {
+  id: string;
+  runId: string;
+  projectId: string;
+  mode: AgentMode;
+  skillId: string;
+  request: string;
+  tools: string[];
+  filesRead: string[];
+  filesChanged: string[];
+  success: boolean;
+  error?: string;
+  createdAt: string;
 }
 
 export interface ClaimRecord {

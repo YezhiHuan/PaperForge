@@ -1,4 +1,9 @@
 import type {
+  AgentFileChange,
+  AgentLogEntry,
+  AgentMode,
+  AgentRun,
+  AgentSkill,
   AppLog,
   CitationBackend,
   CitationTask,
@@ -59,12 +64,129 @@ export const projectFolders = [
   ".paperforge"
 ];
 
+export const builtInAgentSkills: AgentSkill[] = [
+  {
+    id: "ask.project-review",
+    name: "Project Review",
+    type: "ask",
+    description: "Review project structure, manuscript sections, references, and attachments without changing files.",
+    allowedTools: ["list_project_files", "list_sections", "list_figures", "check_broken_links", "write_agent_log"],
+    requiresDiff: false,
+    requiresConfirmation: false,
+    writesFiles: false,
+    riskLevel: "low"
+  },
+  {
+    id: "ask.export-readiness",
+    name: "Export Readiness",
+    type: "ask",
+    description: "Check whether the current manuscript is ready for Markdown, Word placeholder, or LaTeX export.",
+    allowedTools: ["list_project_files", "list_sections", "check_broken_links", "write_agent_log"],
+    requiresDiff: false,
+    requiresConfirmation: false,
+    writesFiles: false,
+    riskLevel: "low"
+  },
+  {
+    id: "edit.academic-polish",
+    name: "Academic Polish",
+    type: "edit",
+    description: "Improve academic style while preserving technical meaning, citations, and numbers.",
+    allowedTools: ["read_project_file", "patch_project_file", "write_agent_log"],
+    requiresDiff: true,
+    requiresConfirmation: true,
+    writesFiles: true,
+    riskLevel: "medium"
+  },
+  {
+    id: "edit.translate-zh-en",
+    name: "Translate ZH-EN",
+    type: "edit",
+    description: "Translate or bilingual-polish the active section while preserving citations and technical details.",
+    allowedTools: ["read_project_file", "patch_project_file", "write_agent_log"],
+    requiresDiff: true,
+    requiresConfirmation: true,
+    writesFiles: true,
+    riskLevel: "medium"
+  },
+  {
+    id: "operate.insert-figure",
+    name: "Insert Figure",
+    type: "operate",
+    description: "Prepare a safe Markdown figure insertion using files under attachments/figures.",
+    allowedTools: ["list_figures", "read_project_file", "patch_project_file", "write_agent_log"],
+    requiresDiff: true,
+    requiresConfirmation: true,
+    writesFiles: true,
+    riskLevel: "medium"
+  }
+];
+
 export function nowIso() {
   return new Date().toISOString();
 }
 
 export function makeId(prefix: string) {
   return `${prefix}_${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
+}
+
+export function selectAgentSkill(mode: AgentMode, requestedSkillId: string | undefined, request: string) {
+  if (requestedSkillId && requestedSkillId !== "auto") {
+    return builtInAgentSkills.find((skill) => skill.id === requestedSkillId) ?? builtInAgentSkills.find((skill) => skill.type === mode)!;
+  }
+  const q = request.toLowerCase();
+  if (mode === "ask" && /export|word|latex|markdown|ready|导出|投稿/.test(q)) return builtInAgentSkills.find((skill) => skill.id === "ask.export-readiness")!;
+  if (mode === "edit" && /translate|translation|中文|英文|翻译|中英/.test(q)) return builtInAgentSkills.find((skill) => skill.id === "edit.translate-zh-en")!;
+  if (mode === "operate") return builtInAgentSkills.find((skill) => skill.id === "operate.insert-figure")!;
+  return builtInAgentSkills.find((skill) => skill.type === mode)!;
+}
+
+export function makeSimpleDiff(path: string, original: string, proposed: string) {
+  if (original === proposed) return `--- ${path}\n+++ ${path}\n(no changes)`;
+  const originalLines = original.split("\n");
+  const proposedLines = proposed.split("\n");
+  const lines = [`--- ${path}`, `+++ ${path}`];
+  const max = Math.max(originalLines.length, proposedLines.length);
+  for (let index = 0; index < max; index += 1) {
+    const before = originalLines[index];
+    const after = proposedLines[index];
+    if (before === after) {
+      if (before !== undefined) lines.push(` ${before}`);
+    } else {
+      if (before !== undefined) lines.push(`-${before}`);
+      if (after !== undefined) lines.push(`+${after}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+export function createAgentLogEntry(run: AgentRun, success: boolean, error?: string): AgentLogEntry {
+  return {
+    id: makeId("agent_log"),
+    runId: run.id,
+    projectId: run.projectId,
+    mode: run.mode,
+    skillId: run.skillId,
+    request: run.request,
+    tools: run.toolResults.map((tool) => tool.tool),
+    filesRead: run.filesRead,
+    filesChanged: run.filesChanged,
+    success,
+    error,
+    createdAt: nowIso()
+  };
+}
+
+export function createAgentChange(path: string, originalContent: string, proposedContent: string): AgentFileChange {
+  return {
+    id: makeId("agent_change"),
+    path,
+    changeType: originalContent ? "update" : "create",
+    originalContent,
+    proposedContent,
+    diff: makeSimpleDiff(path, originalContent, proposedContent),
+    status: "pending"
+  };
 }
 
 export function citationBackendForMode(mode: ManuscriptMode): CitationBackend {
@@ -108,7 +230,7 @@ export function createProjectConfig(input: ProjectCreateInput, rootPath: string)
   const sections = createInitialSections(input.sectionNames, input.sectionNaming);
   return {
     id: makeId("project"),
-    version: "1.0.1",
+    version: "2.0.0",
     title: input.title.trim() || "Untitled Paper",
     author: input.author.trim(),
     authors: input.author.trim() ? input.author.split(",").map((item) => item.trim()).filter(Boolean) : [],

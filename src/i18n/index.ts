@@ -35,7 +35,7 @@ export const messages = {
       literature: "Literature",
       figures: "Figures",
       data: "Data",
-      ai: "AI",
+      ai: "Agent",
       attachments: "Attachments",
       outputs: "Outputs",
       settings: "Settings",
@@ -61,7 +61,7 @@ export const messages = {
       importFolder: "Import folder"
     },
     tools: {
-      ai: "AI Assistant",
+      ai: "Agent Panel",
       references: "Reference Manager",
       citations: "Citation Tasks",
       literature: "Literature Library",
@@ -129,7 +129,7 @@ export const messages = {
       literature: "文献",
       figures: "图表",
       data: "数据",
-      ai: "AI",
+      ai: "Agent",
       attachments: "附件",
       outputs: "导出",
       settings: "设置",
@@ -155,7 +155,7 @@ export const messages = {
       importFolder: "导入文件夹"
     },
     tools: {
-      ai: "AI 助手",
+      ai: "Agent 面板",
       references: "参考文献管理",
       citations: "引用任务",
       literature: "文献库",

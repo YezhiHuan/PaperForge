@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AIProposal,
+  AgentLogEntry,
+  AgentMode,
+  AgentRun,
+  AgentSkill,
   AppLog,
   AppSettings,
   CitationStatus,
@@ -22,7 +26,10 @@ import type {
 } from "../types";
 import {
   appLog,
+  builtInAgentSkills,
   convertCitationsForMode,
+  createAgentChange,
+  createAgentLogEntry,
   createProjectConfig,
   makeId,
   makeSectionFilename,
@@ -32,6 +39,7 @@ import {
   projectActivity,
   safeFolderName,
   scanWordCitationTasks,
+  selectAgentSkill,
   searchLiteratureMock,
   validateExportDraft
 } from "./domain";
@@ -55,6 +63,8 @@ interface BrowserState {
   literatureByProject: Record<string, LiteratureItem[]>;
   claimsByProject: Record<string, ClaimRecord[]>;
   proposalsByProject: Record<string, AIProposal[]>;
+  agentRunsByProject: Record<string, AgentRun[]>;
+  agentLogsByProject: Record<string, AgentLogEntry[]>;
   activitiesByProject: Record<string, ProjectActivity[]>;
   logs: AppLog[];
   settings: AppSettings;
@@ -83,6 +93,8 @@ const emptyState = (): BrowserState => ({
   literatureByProject: {},
   claimsByProject: {},
   proposalsByProject: {},
+  agentRunsByProject: {},
+  agentLogsByProject: {},
   activitiesByProject: {},
   logs: [],
   settings: defaultSettings
@@ -94,7 +106,7 @@ function normalizeProject(project: ProjectConfig): ProjectConfig {
   const targetJournal = project.targetJournal?.trim() || "Unspecified Journal";
   return {
     ...project,
-    version: project.version ?? "1.0.1",
+    version: project.version ?? "2.0.0",
     title,
     author,
     authors: project.authors ?? (author ? author.split(",").map((item) => item.trim()).filter(Boolean) : []),
@@ -190,7 +202,7 @@ export const api = {
       state.settings = { ...state.settings, workspaceRoot: rootPath || "workspace", themeMode: state.settings.themeMode || "light" };
       saveState(state);
       return {
-        version: "1.0.1",
+        version: "2.0.0",
         workspaceName: "workspace",
         createdAt: nowIso(),
         updatedAt: nowIso(),
@@ -249,6 +261,8 @@ export const api = {
       state.literatureByProject[project.id] = [];
       state.claimsByProject[project.id] = [];
       state.proposalsByProject[project.id] = [];
+      state.agentRunsByProject[project.id] = [];
+      state.agentLogsByProject[project.id] = [];
       state.activitiesByProject[project.id] = [];
       saveState(state);
       return project;
@@ -292,6 +306,8 @@ export const api = {
       state.literatureByProject[project.id] = [];
       state.claimsByProject[project.id] = [];
       state.proposalsByProject[project.id] = [];
+      state.agentRunsByProject[project.id] = [];
+      state.agentLogsByProject[project.id] = [];
       state.activitiesByProject[project.id] = [];
       saveState(state);
       return normalizedProject;
@@ -547,6 +563,137 @@ export const api = {
       saveState(state);
       return state.claimsByProject[projectId];
     });
+  },
+
+  listAgentSkills(projectId: string) {
+    return tauriOrBrowser<AgentSkill[]>("list_agent_skills", { projectId }, () => builtInAgentSkills);
+  },
+
+  runAgent(projectId: string, mode: AgentMode, skillId: string, request: string, sectionId?: string) {
+    return tauriOrBrowser<AgentRun>("run_agent", { projectId, mode, skillId, request, sectionId }, () => {
+      const state = loadState();
+      const project = normalizeProject(state.projects.find((item) => item.id === projectId)!);
+      const sections = state.sectionsByProject[projectId] ?? [];
+      const references = state.referencesByProject[projectId] ?? [];
+      const skill = selectAgentSkill(mode, skillId, request);
+      const activeSection = sections.find((section) => section.id === sectionId) ?? sections[0];
+      const timestamp = nowIso();
+      const filesRead: string[] = [];
+      const changes = [];
+      let report = "";
+      const toolResults = skill.allowedTools.map((tool) => ({ tool, ok: true, message: `${tool} available in browser fallback.` }));
+
+      if (mode === "ask") {
+        const draft = mergeSections(sections);
+        const citationCount = [...draft.matchAll(/\[CITE:\s*([^\]]+)\]|\[@([^\]]+)\]|\\cite\{([^}]+)\}/g)].length;
+        filesRead.push("paperforge.json", ...sections.map((section) => section.path), "references/bib/references.bib");
+        report = [
+          `${skill.name} completed for ${project.title}.`,
+          `Sections: ${sections.length}. References: ${references.length}. Citation markers: ${citationCount}.`,
+          sections.length ? `Manuscript files checked: ${sections.map((section) => section.path).join(", ")}.` : "Empty manuscript is valid; no section files found.",
+          "No files were modified."
+        ].join("\n");
+      } else if (mode === "edit") {
+        if (activeSection) {
+          filesRead.push(activeSection.path);
+          const prefix = skill.id === "edit.translate-zh-en" ? "Translation/polish draft" : "Academic polish draft";
+          const proposed = `${activeSection.content.trim()}\n\n> ${prefix}: provider abstraction ready. Review wording, preserve citations, and apply only if acceptable.\n`;
+          changes.push(createAgentChange(activeSection.path, activeSection.content, proposed));
+          report = `${skill.name} prepared a diff for ${activeSection.title}. Review before applying.`;
+        } else {
+          report = "No active section found. Create a section before using Edit mode.";
+        }
+      } else {
+        if (activeSection) {
+          filesRead.push(activeSection.path, "attachments/figures");
+          const figureMatch = request.match(/attachments\/figures\/[^\s)]+/i);
+          const figurePath = figureMatch?.[0] ?? "attachments/figures/figure-placeholder.png";
+          const proposed = `${activeSection.content.trim()}\n\n![Figure caption](${figurePath})\n`;
+          changes.push(createAgentChange(activeSection.path, activeSection.content, proposed));
+          report = "Insert Figure prepared a Markdown image reference. Only attachments/figures paths are accepted by the desktop safe filesystem.";
+        } else {
+          report = "No active section found. Create a section before using Operate mode.";
+        }
+      }
+
+      const run: AgentRun = {
+        id: makeId("agent_run"),
+        projectId,
+        mode,
+        skillId: skill.id,
+        request,
+        status: changes.length ? "planned" : "completed",
+        plan: {
+          summary: `${skill.name}: ${request || "No request text provided."}`,
+          steps: mode === "ask" ? ["Inspect project metadata", "Read safe manuscript/reference context", "Return report"] : ["Read active section", "Prepare safe diff", "Wait for Apply or Reject"],
+          filesToRead: filesRead,
+          filesToChange: changes.map((change) => change.path)
+        },
+        filesRead,
+        filesChanged: [],
+        report,
+        changes,
+        toolResults,
+        createdAt: timestamp,
+        updatedAt: timestamp
+      };
+      state.agentRunsByProject[projectId] = [run, ...(state.agentRunsByProject[projectId] ?? [])];
+      state.agentLogsByProject[projectId] = [createAgentLogEntry(run, true), ...(state.agentLogsByProject[projectId] ?? [])].slice(0, 80);
+      saveState(state);
+      return run;
+    });
+  },
+
+  applyAgentChange(projectId: string, runId: string, changeId: string) {
+    return tauriOrBrowser<AgentRun>("apply_agent_change", { projectId, runId, changeId }, () => {
+      const state = loadState();
+      const runs = state.agentRunsByProject[projectId] ?? [];
+      const run = runs.find((item) => item.id === runId);
+      if (!run) throw new Error("Agent run not found");
+      const change = run.changes.find((item) => item.id === changeId);
+      if (!change) throw new Error("Agent change not found");
+      const sections = state.sectionsByProject[projectId] ?? [];
+      const timestamp = nowIso();
+      state.sectionsByProject[projectId] = sections.map((section) =>
+        section.path === change.path ? { ...section, content: change.proposedContent, updatedAt: timestamp } : section
+      );
+      const project = normalizeProject(state.projects.find((item) => item.id === projectId)!);
+      state.projects = state.projects.map((item) => (item.id === projectId ? syncProjectManifest(project, state.sectionsByProject[projectId]) : item));
+      const updatedRun: AgentRun = {
+        ...run,
+        status: "applied",
+        filesChanged: [...new Set([...run.filesChanged, change.path])],
+        changes: run.changes.map((item) => item.id === changeId ? { ...item, status: "applied" } : item),
+        updatedAt: timestamp
+      };
+      state.agentRunsByProject[projectId] = runs.map((item) => item.id === runId ? updatedRun : item);
+      state.agentLogsByProject[projectId] = [createAgentLogEntry(updatedRun, true), ...(state.agentLogsByProject[projectId] ?? [])].slice(0, 80);
+      saveState(state);
+      return updatedRun;
+    });
+  },
+
+  rejectAgentRun(projectId: string, runId: string) {
+    return tauriOrBrowser<AgentRun>("reject_agent_run", { projectId, runId }, () => {
+      const state = loadState();
+      const runs = state.agentRunsByProject[projectId] ?? [];
+      const run = runs.find((item) => item.id === runId);
+      if (!run) throw new Error("Agent run not found");
+      const updatedRun: AgentRun = {
+        ...run,
+        status: "rejected",
+        changes: run.changes.map((change) => ({ ...change, status: "rejected" })),
+        updatedAt: nowIso()
+      };
+      state.agentRunsByProject[projectId] = runs.map((item) => item.id === runId ? updatedRun : item);
+      state.agentLogsByProject[projectId] = [createAgentLogEntry(updatedRun, true), ...(state.agentLogsByProject[projectId] ?? [])].slice(0, 80);
+      saveState(state);
+      return updatedRun;
+    });
+  },
+
+  readAgentLog(projectId: string) {
+    return tauriOrBrowser<AgentLogEntry[]>("read_agent_log", { projectId }, () => loadState().agentLogsByProject[projectId] ?? []);
   },
 
   generateAiProposal(projectId: string, sectionId: string, instruction: string, selectedText: string, settings: AppSettings) {
