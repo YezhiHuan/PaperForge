@@ -230,7 +230,7 @@ export function createProjectConfig(input: ProjectCreateInput, rootPath: string)
   const sections = createInitialSections(input.sectionNames, input.sectionNaming);
   return {
     id: makeId("project"),
-    version: "2.1.0",
+    version: "2.1.1",
     title: input.title.trim() || "Untitled Paper",
     author: input.author.trim(),
     authors: input.author.trim() ? input.author.split(",").map((item) => item.trim()).filter(Boolean) : [],
@@ -406,15 +406,84 @@ export function searchLiteratureMock(items: LiteratureItem[], query: string) {
 }
 
 export function markdownToPreview(markdown: string) {
-  return markdown
-    .replace(/^### (.*)$/gm, "<h3>$1</h3>")
-    .replace(/^## (.*)$/gm, "<h2>$1</h2>")
-    .replace(/^# (.*)$/gm, "<h1>$1</h1>")
-    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-    .replace(/\n{2,}/g, "</p><p>")
-    .replace(/\n/g, "<br />")
-    .replace(/^/, "<p>")
-    .replace(/$/, "</p>");
+  const escapeHtml = (value: string) =>
+    value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const inline = (value: string) =>
+    escapeHtml(value)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+  const lines = markdown.split(/\r?\n/);
+  const html: string[] = [];
+  let inCode = false;
+  let inList = false;
+  let inQuote = false;
+  const closeList = () => {
+    if (inList) {
+      html.push("</ul>");
+      inList = false;
+    }
+  };
+  const closeQuote = () => {
+    if (inQuote) {
+      html.push("</blockquote>");
+      inQuote = false;
+    }
+  };
+  for (const line of lines) {
+    if (line.startsWith("```")) {
+      closeList();
+      closeQuote();
+      html.push(inCode ? "</code></pre>" : "<pre><code>");
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode) {
+      html.push(`${escapeHtml(line)}\n`);
+      continue;
+    }
+    if (!line.trim()) {
+      closeList();
+      closeQuote();
+      continue;
+    }
+    const heading = line.match(/^(#{1,3})\s+(.*)$/);
+    if (heading) {
+      closeList();
+      closeQuote();
+      const level = heading[1].length;
+      html.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+      continue;
+    }
+    const list = line.match(/^\s*[-*]\s+(.*)$/);
+    if (list) {
+      closeQuote();
+      if (!inList) {
+        html.push("<ul>");
+        inList = true;
+      }
+      html.push(`<li>${inline(list[1])}</li>`);
+      continue;
+    }
+    const quote = line.match(/^>\s?(.*)$/);
+    if (quote) {
+      closeList();
+      if (!inQuote) {
+        html.push("<blockquote>");
+        inQuote = true;
+      }
+      html.push(`<p>${inline(quote[1])}</p>`);
+      continue;
+    }
+    closeList();
+    closeQuote();
+    html.push(`<p>${inline(line)}</p>`);
+  }
+  closeList();
+  closeQuote();
+  if (inCode) html.push("</code></pre>");
+  return html.join("\n");
 }
 
 export function mergeSections(sections: ManuscriptSection[]) {

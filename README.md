@@ -1,6 +1,6 @@
 # PaperForge
 
-Current version: `2.1.0`
+Current version: `2.1.1`
 
 PaperForge is a local-first AI manuscript writing desktop app. It organizes papers as local folders and connects Markdown sections, references, attachments, exports, and replaceable AI model settings.
 
@@ -29,7 +29,7 @@ npm run build
 npm run tauri build
 ```
 
-Lint is not configured in v2.1.0.
+Lint is not configured in v2.1.1.
 
 ## Workspace Init
 
@@ -57,7 +57,7 @@ workspace/
 
 ```json
 {
-  "version": "2.1.0",
+  "version": "2.1.1",
   "workspaceName": "workspace",
   "createdAt": "...",
   "updatedAt": "...",
@@ -100,7 +100,9 @@ Do not commit `ai-models.json`; it may contain API keys.
 
 ## LLM Settings
 
-v2.1.0 connects the Agent and AI proposal flow to real model providers.
+v2.1.1 keeps Settings as a standalone page. Open Settings from the top bar or sidebar footer; it no longer occupies the manuscript editor or right panel.
+
+PaperForge connects the Agent and AI proposal flow to real model providers.
 
 Supported providers:
 
@@ -110,7 +112,9 @@ Supported providers:
 
 Settings include provider, base URL, API key, model, temperature, and max tokens. If the Settings API key is empty, PaperForge tries the default model in `workspace/.paperforge/ai-models.json`.
 
-Desktop LLM requests require `curl` on PATH. API keys stay in local settings or workspace model config and must not be committed.
+The Settings page can test the AI connection and fetch model IDs from OpenAI-compatible `/models` endpoints. Desktop LLM requests require `curl` on PATH. API keys stay in local settings or workspace model config and must not be committed. They are not included in export packages, logs, or README examples.
+
+OpenAI-compatible chat completion support is the primary supported provider. OpenAI uses the same chat completion shape. Anthropic has basic completion support; model fetching for Anthropic is reported as unsupported in this build. Local provider settings are placeholders for OpenAI-compatible local servers.
 
 ## Paper Projects
 
@@ -148,9 +152,13 @@ workspace/
 
 `paperforge.json` keeps metadata and section paths. Empty manuscript is valid; PaperForge creates `manuscript/sections/` but no fixed default sections.
 
+When a paper opens, PaperForge scans `manuscript/sections/*.md`, merges readable files with `paperforge.json` section metadata, hides missing section files from the editable list, and writes the synced section list back to the manifest.
+
+The left file tree reads the actual paper folder from disk. Markdown files in `manuscript/sections/` or other project folders can be opened, edited, saved, and previewed. Markdown files outside the manuscript manifest open as regular documents.
+
 ## Project Agent
 
-v2.1.0 connects the PaperForge Project Agent to real LLM providers. The right panel contains an Agent Panel with Ask, Edit, and Operate modes.
+PaperForge connects the Project Agent to real LLM providers. The right panel contains an Agent Panel with Ask, Edit, and Operate modes.
 
 Built-in Skills:
 
@@ -197,7 +205,7 @@ PaperForge does not generate Zotero Word fields. Use Zotero Word plugin for fina
 
 ## Export
 
-v2.1.0 supports:
+v2.1.1 supports:
 
 - Export JSON: writes current paper config to `exports/json/paperforge.json`
 - Export Markdown: writes a package under `exports/markdown/` with `paper.md`, sections, references, attachments, claims, and `export-report.json`
@@ -205,6 +213,10 @@ v2.1.0 supports:
 - Export Word Draft: uses Pandoc to write `exports/word/paper.docx` and keeps `[CITE: key]` placeholders
 - Export LaTeX Project: uses Pandoc to write `exports/latex/paper.tex` and copies `references/bib/references.bib` when available
 - Project Agent with safe Ask / Edit / Operate workflows and built-in Skills
+
+Export jobs return absolute output paths in desktop mode. Open output folder and open project folder resolve relative workspace paths before launching the OS file browser.
+
+Word export status is separated from folder reveal/open warnings. If the DOCX is generated, the export is shown as successful; reveal/open-folder failures are reported as warnings.
 
 Word and LaTeX export require Pandoc. On Windows, if `pandoc --version` fails, PaperForge tries:
 
@@ -225,9 +237,11 @@ PaperForge also checks common Windows install locations such as `C:\Program File
 
 ## UI And Theme
 
-The app title displays `PaperForge v2.1.0`.
+The app title displays `PaperForge v2.1.1`.
 
 Default theme is light. Settings can switch light, dark, or eye-care theme. Production Windows desktop builds do not show an extra terminal window.
+
+PaperForge uses app-level dialogs for confirmations, text input, and errors. Native browser `alert`, `prompt`, and `confirm` dialogs are not used.
 
 ## Persistence
 
@@ -249,7 +263,7 @@ workspace/.paperforge/ai-models.json
 
 The repository ignores generated workspaces and local secrets.
 
-## v2.1.0 Limits
+## v2.1.1 Limits
 
 - Direct global `paperforge` command may require `npm link` or package installation; npm scripts work from the clone.
 - File picker is not implemented; workspace/project paths can be typed.

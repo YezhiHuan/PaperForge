@@ -12,6 +12,7 @@ import type {
   ClaimRecord,
   ExportJob,
   ExportValidationWarning,
+  FileTreeNode,
   LiteratureItem,
   ManuscriptMode,
   ManuscriptSection,
@@ -22,6 +23,7 @@ import type {
   ReferenceItem,
   SectionCreateInput,
   SectionRenameInput,
+  TextFilePayload,
   WorkspaceConfig
 } from "../types";
 import {
@@ -108,7 +110,7 @@ function normalizeProject(project: ProjectConfig): ProjectConfig {
   const targetJournal = project.targetJournal?.trim() || "Unspecified Journal";
   return {
     ...project,
-    version: project.version ?? "2.1.0",
+    version: project.version ?? "2.1.1",
     title,
     author,
     authors: project.authors ?? (author ? author.split(",").map((item) => item.trim()).filter(Boolean) : []),
@@ -204,7 +206,7 @@ export const api = {
       state.settings = { ...state.settings, workspaceRoot: rootPath || "workspace", themeMode: state.settings.themeMode || "light" };
       saveState(state);
       return {
-        version: "2.1.0",
+        version: "2.1.1",
         workspaceName: "workspace",
         createdAt: nowIso(),
         updatedAt: nowIso(),
@@ -468,6 +470,68 @@ export const api = {
     return tauriOrBrowser("list_project_tree", { projectId }, () => []);
   },
 
+  listProjectFiles(projectId: string) {
+    return tauriOrBrowser<FileTreeNode[]>("list_project_files", { projectId }, () => {
+      const state = loadState();
+      const project = state.projects.find((item) => item.id === projectId);
+      const sections = state.sectionsByProject[projectId] ?? [];
+      const sectionNodes: FileTreeNode[] = sections.map((section) => ({
+        name: section.filename,
+        path: section.path,
+        relativePath: section.path,
+        kind: "file",
+        extension: "md"
+      }));
+      return [
+        {
+          name: "manuscript",
+          path: "manuscript",
+          relativePath: "manuscript",
+          kind: "directory",
+          children: [
+            {
+              name: "sections",
+              path: "manuscript/sections",
+              relativePath: "manuscript/sections",
+              kind: "directory",
+              children: sectionNodes
+            }
+          ]
+        },
+        { name: "references", path: "references", relativePath: "references", kind: "directory", children: [] },
+        { name: "attachments", path: "attachments", relativePath: "attachments", kind: "directory", children: [] },
+        { name: "exports", path: "exports", relativePath: "exports", kind: "directory", children: [] },
+        {
+          name: "paperforge.json",
+          path: "paperforge.json",
+          relativePath: "paperforge.json",
+          kind: "file",
+          extension: "json"
+        },
+        ...(project ? [] : [])
+      ];
+    });
+  },
+
+  readTextFile(projectId: string, path: string) {
+    return tauriOrBrowser<TextFilePayload>("read_text_file", { projectId, path }, () => {
+      const state = loadState();
+      const section = (state.sectionsByProject[projectId] ?? []).find((item) => item.path === path);
+      if (!section) throw new Error("Browser fallback can read manuscript sections only.");
+      return { path, content: section.content };
+    });
+  },
+
+  writeTextFile(projectId: string, path: string, content: string) {
+    return tauriOrBrowser<TextFilePayload>("write_text_file", { projectId, path, content }, () => {
+      const state = loadState();
+      const sections = state.sectionsByProject[projectId] ?? [];
+      state.sectionsByProject[projectId] = sections.map((section) => section.path === path ? { ...section, content, updatedAt: nowIso() } : section);
+      saveState(state);
+      return { path, content };
+    });
+  },
+
   parseBibtex(bibtex: string) {
     return tauriOrBrowser<ReferenceItem[]>("parse_bibtex", { bibtex }, () => parseBibtexEntries(bibtex));
   },
@@ -680,6 +744,21 @@ export const api = {
   generateAiProposal(projectId: string, sectionId: string, instruction: string, selectedText: string, settings: AppSettings) {
     return tauriOrBrowser<AIProposal>("generate_ai_proposal", { projectId, sectionId, instruction, selectedText, settings }, () => {
       throw new Error("AI proposal generation requires the PaperForge desktop app.");
+    });
+  },
+
+  testAiConnection(settings: AppSettings) {
+    return tauriOrBrowser<string>("test_ai_connection", { settings }, () => {
+      if (!settings.llmProvider.apiKey.trim()) throw new Error("API key is required. Configure it in Settings.");
+      if (!settings.llmProvider.model.trim()) throw new Error("Model is required. Choose or enter a model in Settings.");
+      throw new Error("AI connection test requires the PaperForge desktop app.");
+    });
+  },
+
+  fetchAiModels(settings: AppSettings) {
+    return tauriOrBrowser<string[]>("fetch_ai_models", { settings }, () => {
+      if (!settings.llmProvider.apiKey.trim()) throw new Error("API key is required. Configure it in Settings.");
+      throw new Error("Model fetching requires the PaperForge desktop app.");
     });
   },
 

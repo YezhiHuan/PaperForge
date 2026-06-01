@@ -16,6 +16,7 @@ import {
   Moon,
   Pencil,
   Plus,
+  RefreshCw,
   Save,
   Search,
   Settings,
@@ -43,6 +44,7 @@ import type {
   ClaimRecord,
   ExportValidationWarning,
   ExportJob,
+  FileTreeNode,
   Language,
   LlmProviderKind,
   LiteratureItem,
@@ -55,8 +57,14 @@ import type {
   ThemeMode
 } from "./types";
 
-type ToolTab = "info" | "agent" | "references" | "citations" | "literature" | "claims" | "export" | "settings";
+type ToolTab = "info" | "agent" | "references" | "citations" | "literature" | "claims" | "export";
 type Translate = (key: MessageKey) => string;
+type AppView = "main" | "settings";
+type ActiveMarkdownFile = { path: string; name: string; content: string; originalContent: string };
+type DialogState =
+  | { kind: "confirm"; title: string; description: string; confirmLabel: string; danger?: boolean; resolve: (value: boolean) => void }
+  | { kind: "input"; title: string; description: string; defaultValue: string; placeholder?: string; confirmLabel: string; validate?: (value: string) => string | undefined; resolve: (value: string | null) => void }
+  | { kind: "message"; title: string; description: string; resolve: () => void };
 
 const cardVariants = {
   hidden: { opacity: 0, y: 14 },
@@ -92,6 +100,7 @@ function outputFolderFromPath(path: string) {
 }
 
 function App() {
+  const [view, setView] = useState<AppView>("main");
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [projects, setProjects] = useState<ProjectConfig[]>([]);
   const [activeProject, setActiveProject] = useState<ProjectConfig | null>(null);
@@ -115,6 +124,12 @@ function App() {
     exports: false,
     paperforge: false
   });
+  const [fileTree, setFileTree] = useState<FileTreeNode[]>([]);
+  const [fileTreeError, setFileTreeError] = useState("");
+  const [activeMarkdownFile, setActiveMarkdownFile] = useState<ActiveMarkdownFile | null>(null);
+  const [dialog, setDialog] = useState<DialogState | null>(null);
+  const [aiModels, setAiModels] = useState<string[]>([]);
+  const [settingsStatus, setSettingsStatus] = useState("");
   const [bibtex, setBibtex] = useState("");
   const [aiInstruction, setAiInstruction] = useState("Rewrite selected paragraph");
   const [aiLoading, setAiLoading] = useState(false);
@@ -140,12 +155,32 @@ function App() {
     () => sections.find((section) => section.id === activeSectionId) ?? sections[0],
     [activeSectionId, sections]
   );
+  const activeDocument = activeMarkdownFile ?? activeSection;
+  const activeDocumentTitle = activeMarkdownFile?.name ?? activeSection?.title ?? "No section";
 
   const addLog = (level: AppLog["level"], message: string) => {
     const log = api.appLog(level, message);
     setLogs((current) => [log, ...current].slice(0, 8));
     void api.appendAppLog(log).catch(() => undefined);
   };
+
+  const errorMessage = (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback);
+
+  const showMessage = (title: string, description: string) =>
+    new Promise<void>((resolve) => setDialog({ kind: "message", title, description, resolve }));
+
+  const askConfirm = (title: string, description: string, confirmLabel: string, danger = false) =>
+    new Promise<boolean>((resolve) => setDialog({ kind: "confirm", title, description, confirmLabel, danger, resolve }));
+
+  const askInput = (
+    title: string,
+    description: string,
+    defaultValue = "",
+    confirmLabel = "OK",
+    placeholder = "",
+    validate?: (value: string) => string | undefined
+  ) =>
+    new Promise<string | null>((resolve) => setDialog({ kind: "input", title, description, defaultValue, confirmLabel, placeholder, validate, resolve }));
 
   const openCreateModal = () => {
     setProjectForm({ ...emptyProjectForm, manuscriptMode: settings.defaultManuscriptMode });
@@ -186,26 +221,67 @@ function App() {
   }, [settings.themeMode]);
 
   async function selectProject(project: ProjectConfig) {
-    setActiveProject(project);
-    const [loadedSections, loadedRefs, loadedTasks, loadedLit, loadedClaims, loadedAgentSkills, loadedAgentLogs] = await Promise.all([
-      api.readSections(project.id),
-      api.listReferences(project.id),
-      api.scanCitationTasks(project.id),
-      api.listLiterature(project.id),
-      api.listClaims(project.id),
-      api.listAgentSkills(project.id),
-      api.readAgentLog(project.id)
+    const openedProject = await api.openProject(project.id);
+    setActiveProject(openedProject);
+    setSections([]);
+    setActiveSectionId("");
+    let loadedSections: ManuscriptSection[] = [];
+    try {
+      loadedSections = await api.readSections(openedProject.id);
+    } catch (error) {
+      addLog("warning", errorMessage(error, "Could not load manuscript sections."));
+    }
+    const [refsResult, tasksResult, litResult, claimsResult, skillsResult, logsResult] = await Promise.allSettled([
+      api.listReferences(openedProject.id),
+      api.scanCitationTasks(openedProject.id),
+      api.listLiterature(openedProject.id),
+      api.listClaims(openedProject.id),
+      api.listAgentSkills(openedProject.id),
+      api.readAgentLog(openedProject.id)
     ]);
+    const warnIfRejected = (result: PromiseSettledResult<unknown>, fallback: string) => {
+      if (result.status === "rejected") {
+        addLog("warning", errorMessage(result.reason, fallback));
+      }
+    };
+    warnIfRejected(refsResult, "Could not load references.");
+    warnIfRejected(tasksResult, "Could not load citation tasks.");
+    warnIfRejected(litResult, "Could not load literature library.");
+    warnIfRejected(claimsResult, "Could not load claims.");
+    warnIfRejected(skillsResult, "Could not load agent skills.");
+    warnIfRejected(logsResult, "Could not load agent log.");
+    let refreshedProject = openedProject;
+    try {
+      refreshedProject = await api.readProjectConfig(openedProject.id);
+    } catch (error) {
+      addLog("warning", errorMessage(error, "Could not refresh project manifest."));
+    }
+    setActiveProject(refreshedProject);
+    setProjects((current) => current.map((item) => (item.id === refreshedProject.id ? refreshedProject : item)));
     setSections(loadedSections);
     setActiveSectionId(loadedSections[0]?.id ?? "");
-    setReferences(loadedRefs);
-    setCitationTasks(loadedTasks);
-    setLiterature(loadedLit);
-    setClaims(loadedClaims);
-    setAgentSkills(loadedAgentSkills);
-    setAgentLogs(loadedAgentLogs);
+    setActiveMarkdownFile(null);
+    setReferences(refsResult.status === "fulfilled" ? refsResult.value : []);
+    setCitationTasks(tasksResult.status === "fulfilled" ? tasksResult.value : []);
+    setLiterature(litResult.status === "fulfilled" ? litResult.value : []);
+    setClaims(claimsResult.status === "fulfilled" ? claimsResult.value : []);
+    setAgentSkills(skillsResult.status === "fulfilled" ? skillsResult.value : []);
+    setAgentLogs(logsResult.status === "fulfilled" ? logsResult.value : []);
     setAgentRun(null);
-    addLog("success", `Opened ${project.title}`);
+    await refreshFileTree(openedProject.id);
+    addLog("success", `Opened ${refreshedProject.title}`);
+  }
+
+  async function refreshFileTree(projectId = activeProject?.id) {
+    if (!projectId) return;
+    try {
+      setFileTreeError("");
+      setFileTree(await api.listProjectFiles(projectId));
+    } catch (error) {
+      const message = errorMessage(error, "Could not read project files.");
+      setFileTreeError(message);
+      addLog("warning", message);
+    }
   }
 
   async function createProject(event: FormEvent) {
@@ -237,8 +313,11 @@ function App() {
   }
 
   async function deleteProject(project: ProjectConfig) {
-    const ok = window.confirm(
-      `Delete "${displayTitle(project.title, settings.language)}"?\n\nThis will permanently delete the local paper folder:\n${project.rootPath}\n\nThis cannot be undone.`
+    const ok = await askConfirm(
+      "Delete paper",
+      `This permanently deletes the local paper folder:\n${project.rootPath}`,
+      "Delete",
+      true
     );
     if (!ok) return;
     try {
@@ -259,7 +338,7 @@ function App() {
       addLog("warning", `Deleted paper folder: ${project.rootPath}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not delete paper folder. Check file permissions or close files opened by another program.";
-      window.alert(message);
+      void showMessage("Delete failed", message);
       addLog("error", message);
     }
   }
@@ -292,21 +371,30 @@ function App() {
   }
 
   async function editProjectTitle(project: ProjectConfig) {
-    const title = window.prompt("Paper title", project.title === "Untitled Paper" ? "" : project.title);
+    const title = await askInput("Paper title", "Rename paper. Folder path stays unchanged.", project.title === "Untitled Paper" ? "" : project.title, "Rename", "Paper title");
     if (title === null) return;
     await updateProjectMetadata(project, { title });
   }
 
   async function saveActiveSection() {
-    if (!activeProject || !activeSection) return;
+    if (!activeProject) return;
+    if (activeMarkdownFile) {
+      const saved = await api.writeTextFile(activeProject.id, activeMarkdownFile.path, activeMarkdownFile.content);
+      setActiveMarkdownFile({ ...activeMarkdownFile, content: saved.content, originalContent: saved.content });
+      await refreshFileTree(activeProject.id);
+      addLog("success", `Saved Markdown file: ${saved.path}`);
+      return;
+    }
+    if (!activeSection) return;
     const saved = await api.saveSection(activeProject.id, activeSection);
     setSections((current) => current.map((section) => (section.id === saved.id ? { ...saved, updatedAt: nowIso() } : section)));
+    await refreshFileTree(activeProject.id);
     addLog("success", `Saved to workspace: ${activeSection.path}`);
   }
 
   async function createSectionFromPrompt() {
     if (!activeProject) return;
-    const title = window.prompt("Section title");
+    const title = await askInput("Section title", "Create a Markdown section under manuscript/sections.", "", "Create", "Section title", (value) => value.trim() ? undefined : "Section title is required.");
     if (!title?.trim()) return;
     const section = await api.createSection(activeProject.id, { title });
     const loadedSections = await api.readSections(activeProject.id);
@@ -315,12 +403,14 @@ function App() {
     setProjects((current) => current.map((project) => (project.id === updatedProject.id ? updatedProject : project)));
     setSections(loadedSections);
     setActiveSectionId(section.id);
+    setActiveMarkdownFile(null);
+    await refreshFileTree(activeProject.id);
     addLog("success", `Created section: ${section.title}`);
   }
 
   async function renameSectionFromPrompt(section: ManuscriptSection) {
     if (!activeProject) return;
-    const title = window.prompt("Rename section title. File path stays unchanged.", section.title);
+    const title = await askInput("Rename section", "File path stays unchanged.", section.title, "Rename", "Section title", (value) => value.trim() ? undefined : "Section title is required.");
     if (!title?.trim() || title.trim() === section.title) return;
     const renamed = await api.renameSection(activeProject.id, { sectionId: section.id, title });
     const updatedProject = await api.readProjectConfig(activeProject.id);
@@ -332,6 +422,10 @@ function App() {
   }
 
   function updateActiveSection(content: string) {
+    if (activeMarkdownFile) {
+      setActiveMarkdownFile({ ...activeMarkdownFile, content });
+      return;
+    }
     if (!activeSection) return;
     setSections((current) => current.map((section) => (section.id === activeSection.id ? { ...section, content } : section)));
   }
@@ -341,6 +435,31 @@ function App() {
     const citation = formatCitation(activeProject.manuscriptMode, citekey);
     updateActiveSection(`${activeSection.content}${activeSection.content.endsWith(" ") ? "" : " "}${citation}`);
     addLog("info", `Inserted ${citation}`);
+  }
+
+  async function openMarkdownFile(path: string) {
+    if (!activeProject) return;
+    const section = sections.find((item) => item.path === path || item.filename === path.split("/").pop());
+    if (section) {
+      setActiveMarkdownFile(null);
+      setActiveSectionId(section.id);
+      return;
+    }
+    try {
+      const file = await api.readTextFile(activeProject.id, path);
+      setActiveSectionId("");
+      setActiveMarkdownFile({
+        path: file.path,
+        name: file.path.split("/").pop() ?? file.path,
+        content: file.content,
+        originalContent: file.content
+      });
+      addLog("info", `Opened Markdown file: ${file.path}`);
+    } catch (error) {
+      const message = errorMessage(error, "Could not open Markdown file.");
+      addLog("error", message);
+      void showMessage("Open file failed", message);
+    }
   }
 
   async function saveBibtex() {
@@ -390,25 +509,37 @@ function App() {
   }
 
   async function generateProposal(instruction = aiInstruction) {
-    if (!activeProject || !activeSection) return;
+    if (!activeProject || !activeDocument) {
+      void showMessage("AI Assistant", "Open a Markdown section or file before asking AI.");
+      return;
+    }
     setAiLoading(true);
-    window.setTimeout(async () => {
-      try {
-        const generated = await api.generateAiProposal(activeProject.id, activeSection.id, instruction, "", settings);
-        setProposal(generated);
-        addLog("info", "AI proposal generated.");
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "AI proposal failed.";
-        addLog("error", message);
-        window.alert(message);
-      } finally {
-        setAiLoading(false);
-      }
-    }, 520);
+    try {
+      const selectedText = "content" in activeDocument ? activeDocument.content : "";
+      const generated = await api.generateAiProposal(activeProject.id, activeSection?.id ?? activeMarkdownFile?.path ?? "markdown_file", instruction, selectedText, settings);
+      setProposal(generated);
+      addLog("info", "AI proposal generated.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "AI proposal failed.";
+      addLog("error", message);
+      void showMessage("AI proposal failed", message);
+    } finally {
+      setAiLoading(false);
+    }
   }
 
   async function applyProposal() {
-    if (!activeProject || !activeSection || !proposal) return;
+    if (!activeProject || !proposal) return;
+    if (activeMarkdownFile) {
+      const next = proposal.originalText
+        ? activeMarkdownFile.content.replace(proposal.originalText, proposal.proposedText)
+        : `${activeMarkdownFile.content.trim()}\n\n${proposal.proposedText}\n`;
+      setActiveMarkdownFile({ ...activeMarkdownFile, content: next });
+      setProposal({ ...proposal, status: "applied" });
+      addLog("success", "AI proposal applied to open Markdown file. Save to write changes.");
+      return;
+    }
+    if (!activeSection) return;
     const updated = await api.applyAiProposal(activeProject.id, proposal, activeSection);
     setSections((current) => current.map((section) => (section.id === updated.id ? updated : section)));
     setProposal({ ...proposal, status: "applied" });
@@ -426,7 +557,7 @@ function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Agent run failed.";
       addLog("error", message);
-      window.alert(message);
+      void showMessage("Agent run failed", message);
     } finally {
       setAgentLoading(false);
     }
@@ -469,19 +600,18 @@ function App() {
     setExportWarnings(api.validateExport(mode, sections, references));
     setExportRunning(true);
     setExportJob({ id: "running", projectId: activeProject.id, mode, status: "running", outputPath: "", logs: ["Export running"], createdAt: nowIso() });
-    window.setTimeout(async () => {
-      try {
-        const job = await api.exportProject(activeProject.id, mode, sections);
-        setExportJob(job);
-        addLog(job.status === "success" ? "success" : job.status === "failed" ? "error" : "info", `${mode} export ${job.status}: ${job.outputPath || job.logs[0]}`);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : `${mode} export failed.`;
-        setExportJob({ id: "failed", projectId: activeProject.id, mode, status: "failed", outputPath: "", logs: [message], createdAt: nowIso() });
-        addLog("error", message);
-      } finally {
-        setExportRunning(false);
-      }
-    }, 620);
+    try {
+      const job = await api.exportProject(activeProject.id, mode, sections);
+      setExportJob(job);
+      await refreshFileTree(activeProject.id);
+      addLog(job.status === "success" ? "success" : job.status === "failed" ? "error" : "info", `${mode} export ${job.status}: ${job.outputPath || job.logs[0]}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : `${mode} export failed.`;
+      setExportJob({ id: "failed", projectId: activeProject.id, mode, status: "failed", outputPath: "", logs: [message], createdAt: nowIso() });
+      addLog("error", message);
+    } finally {
+      setExportRunning(false);
+    }
   }
 
   async function runProjectFolderExport() {
@@ -491,19 +621,28 @@ function App() {
     const job = await api.exportProjectFolder(activeProject.id);
     setExportJob(job);
     setExportRunning(false);
+    await refreshFileTree(activeProject.id);
     addLog("success", `Project folder export: ${job.outputPath}`);
   }
 
   async function openOutputFolder() {
     if (!exportJob?.outputPath) return;
-    const opened = await api.openOutputFolder(outputFolderFromPath(exportJob.outputPath));
-    addLog(opened ? "info" : "warning", opened ? "Opened output folder." : "Output folder open unavailable in browser mode.");
+    try {
+      const opened = await api.openOutputFolder(outputFolderFromPath(exportJob.outputPath));
+      addLog(opened ? "info" : "warning", opened ? "Opened output folder." : "Export completed, but opening folder failed.");
+    } catch (error) {
+      addLog("warning", `Export completed, but opening folder failed: ${errorMessage(error, "Unknown error")}`);
+    }
   }
 
   async function openProjectFolder() {
     if (!activeProject) return;
-    const opened = await api.openOutputFolder(activeProject.rootPath);
-    addLog(opened ? "info" : "warning", opened ? "Opened project folder." : "Project folder open unavailable in browser mode.");
+    try {
+      const opened = await api.openOutputFolder(activeProject.rootPath);
+      addLog(opened ? "info" : "warning", opened ? "Opened project folder." : "Project folder open unavailable in browser mode.");
+    } catch (error) {
+      addLog("warning", errorMessage(error, "Could not open project folder."));
+    }
   }
 
   async function applySettings(nextSettings: AppSettings) {
@@ -514,18 +653,50 @@ function App() {
     setDraftSettings(saved);
   }
 
+  async function testAiConnection() {
+    try {
+      setSettingsStatus("Testing AI connection...");
+      setSettingsStatus(await api.testAiConnection(draftSettings));
+    } catch (error) {
+      setSettingsStatus(errorMessage(error, "AI connection failed."));
+    }
+  }
+
+  async function fetchAiModels() {
+    try {
+      setSettingsStatus("Fetching models...");
+      const models = await api.fetchAiModels(draftSettings);
+      setAiModels(models);
+      setSettingsStatus(`Fetched ${models.length} model(s).`);
+    } catch (error) {
+      setSettingsStatus(errorMessage(error, "Could not fetch models."));
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[var(--bg)] text-[var(--text)]">
       <TopBar
         project={activeProject}
-        onDashboard={() => setActiveProject(null)}
+        onDashboard={() => { setView("main"); setActiveProject(null); }}
         onNew={openCreateModal}
+        onSettings={() => setView("settings")}
         version={APP_VERSION}
         t={tr}
         language={settings.language}
       />
 
-      {!activeProject ? (
+      {view === "settings" ? (
+        <SettingsPage
+          settings={draftSettings}
+          setSettings={applySettings}
+          onBack={() => setView("main")}
+          onTestConnection={testAiConnection}
+          onFetchModels={fetchAiModels}
+          models={aiModels}
+          status={settingsStatus}
+          t={tr}
+        />
+      ) : !activeProject ? (
         <Dashboard
           projects={projects}
           onOpen={selectProject}
@@ -543,13 +714,17 @@ function App() {
           <Sidebar
             project={activeProject}
             sections={sections}
-            activeSectionId={activeSection?.id}
             expandedFolders={expandedFolders}
             setExpandedFolders={setExpandedFolders}
             setActiveSectionId={setActiveSectionId}
             onCreateSection={createSectionFromPrompt}
             onRenameSection={renameSectionFromPrompt}
-            onSettings={() => setToolTab("settings")}
+            onSettings={() => setView("settings")}
+            fileTree={fileTree}
+            fileTreeError={fileTreeError}
+            onRefreshFiles={() => refreshFileTree(activeProject.id)}
+            onOpenMarkdownFile={openMarkdownFile}
+            activeFilePath={activeMarkdownFile?.path ?? activeSection?.path}
             t={tr}
             language={settings.language}
           />
@@ -566,26 +741,26 @@ function App() {
                     onChange={(event) => setActiveProject({ ...activeProject, title: event.target.value })}
                     onBlur={(event) => updateProjectMetadata(activeProject, { title: event.target.value })}
                   />
-                  <span>{activeSection?.title ?? "No section"}</span>
+                  <span>{activeDocumentTitle}</span>
                 </div>
               </div>
               <div className="toolbar-actions">
-                <button disabled={!activeSection} className={editorMode === "edit" ? "seg active" : "seg"} onClick={() => setEditorMode("edit")}>
+                <button disabled={!activeDocument} className={editorMode === "edit" ? "seg active" : "seg"} onClick={() => setEditorMode("edit")}>
                   {tr("actions.edit")}
                 </button>
-                <button disabled={!activeSection} className={editorMode === "preview" ? "seg active" : "seg"} onClick={() => setEditorMode("preview")}>
+                <button disabled={!activeDocument} className={editorMode === "preview" ? "seg active" : "seg"} onClick={() => setEditorMode("preview")}>
                   {tr("actions.preview")}
                 </button>
                 <button className="secondary-btn" onClick={createSectionFromPrompt}>
                   <Plus size={15} /> {tr("actions.createSection")}
                 </button>
-                <button className="primary-btn" disabled={!activeSection} onClick={saveActiveSection}>
+                <button className="primary-btn" disabled={!activeDocument} onClick={saveActiveSection}>
                   <Save size={15} /> {tr("actions.save")}
                 </button>
               </div>
             </div>
 
-            {activeSection ? (
+            {activeDocument ? (
               <AnimatePresence mode="wait">
                 {editorMode === "edit" ? (
                   <motion.textarea
@@ -595,7 +770,7 @@ function App() {
                     animate="show"
                     exit="exit"
                     className="manuscript-editor"
-                    value={activeSection.content}
+                    value={activeDocument.content}
                     onChange={(event) => updateActiveSection(event.target.value)}
                   />
                 ) : (
@@ -606,7 +781,7 @@ function App() {
                     animate="show"
                     exit="exit"
                     className="preview"
-                    dangerouslySetInnerHTML={{ __html: markdownToPreview(activeSection.content) }}
+                    dangerouslySetInnerHTML={{ __html: markdownToPreview(activeDocument.content) }}
                   />
                 )}
               </AnimatePresence>
@@ -674,8 +849,6 @@ function App() {
             exportManifest={() => exportProjectManifest(activeProject)}
             openOutputFolder={openOutputFolder}
             openProjectFolder={openProjectFolder}
-            settings={draftSettings}
-            setSettings={applySettings}
             updateProjectMetadata={(partial) => updateProjectMetadata(activeProject, partial)}
             combinedDraft={mergeSections(sections)}
             t={tr}
@@ -707,6 +880,10 @@ function App() {
           />
         )}
       </AnimatePresence>
+
+      <AnimatePresence>
+        {dialog && <AppDialog dialog={dialog} onClose={() => setDialog(null)} />}
+      </AnimatePresence>
     </div>
   );
 }
@@ -715,6 +892,7 @@ function TopBar({
   project,
   onDashboard,
   onNew,
+  onSettings,
   version,
   t,
   language
@@ -722,6 +900,7 @@ function TopBar({
   project: ProjectConfig | null;
   onDashboard: () => void;
   onNew: () => void;
+  onSettings: () => void;
   version: string;
   t: Translate;
   language: Language;
@@ -734,6 +913,9 @@ function TopBar({
         <small>v{version}</small>
       </button>
       <div className="topbar-project">{project ? `${displayTitle(project.title, language)} · ${project.manuscriptMode}` : t("app.tagline")}</div>
+      <button className="secondary-btn" onClick={onSettings}>
+        <Settings size={15} /> {t("tools.settings")}
+      </button>
       <button className="primary-btn" onClick={onNew}>
         <Plus size={15} /> {t("actions.newProject")}
       </button>
@@ -814,88 +996,142 @@ function Dashboard({
 function Sidebar({
   project,
   sections,
-  activeSectionId,
   expandedFolders,
   setExpandedFolders,
   setActiveSectionId,
   onCreateSection,
   onRenameSection,
   onSettings,
+  fileTree,
+  fileTreeError,
+  onRefreshFiles,
+  onOpenMarkdownFile,
+  activeFilePath,
   t,
   language
 }: {
   project: ProjectConfig;
   sections: ManuscriptSection[];
-  activeSectionId?: string;
   expandedFolders: Record<string, boolean>;
   setExpandedFolders: (value: Record<string, boolean>) => void;
   setActiveSectionId: (id: string) => void;
   onCreateSection: () => void;
   onRenameSection: (section: ManuscriptSection) => void;
   onSettings: () => void;
+  fileTree: FileTreeNode[];
+  fileTreeError: string;
+  onRefreshFiles: () => void;
+  onOpenMarkdownFile: (path: string) => void;
+  activeFilePath?: string;
   t: Translate;
   language: Language;
 }) {
-  const folders = ["manuscript", "references", "attachments", "exports", "paperforge"];
-  const folderLabels: Record<string, string> = {
-    manuscript: t("project.manuscript"),
-    references: t("project.references"),
-    attachments: t("project.attachments"),
-    exports: t("project.outputs"),
-    paperforge: ".paperforge"
-  };
   return (
     <aside className="sidebar">
       <div className="sidebar-scroll">
         <div className="sidebar-title">
           <Folder size={16} /> {displayTitle(project.title, language)}
+          <button className="tree-icon-btn" onClick={onRefreshFiles} title="Refresh files"><RefreshCw size={13} /></button>
         </div>
-        {folders.map((folder) => (
-          <div key={folder} className="tree-block">
-            <button
-              className="tree-folder"
-              onClick={() => setExpandedFolders({ ...expandedFolders, [folder]: !expandedFolders[folder] })}
-            >
-              <ChevronDown className={expandedFolders[folder] ? "chev open" : "chev"} size={15} />
-              {folderLabels[folder]}
-            </button>
-            <AnimatePresence initial={false}>
-              {expandedFolders[folder] && (
-                <motion.div className="tree-children" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
-                  {folder === "manuscript"
-                    ? (
-                      <>
-                        <button className="tree-file new-section" onClick={onCreateSection}>
-                          <Plus size={14} /> {t("project.newSection")}
-                        </button>
-                        {sections.length === 0 && <span className="tree-file muted">{t("project.emptyManuscript")}</span>}
-                        {sections.map((section) => (
-                          <div className={section.id === activeSectionId ? "tree-file-row active" : "tree-file-row"} key={section.id}>
-                            <button
-                              className="tree-file"
-                              onClick={() => setActiveSectionId(section.id)}
-                              title={`${section.title} · ${section.path}`}
-                            >
-                              <FileText size={14} /> {section.title}
-                            </button>
-                            <button className="tree-icon-btn" onClick={() => onRenameSection(section)} title="Rename title; file path stays unchanged">
-                              <Pencil size={13} />
-                            </button>
-                          </div>
-                        ))}
-                      </>
-                    )
-                    : <div className="tree-placeholder" aria-hidden="true" />}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
+        <button className="tree-file new-section" onClick={onCreateSection}>
+          <Plus size={14} /> {t("project.newSection")}
+        </button>
+        {sections.length === 0 && <span className="tree-file muted">{t("project.emptyManuscript")}</span>}
+        {fileTreeError && <div className="tree-error">{fileTreeError}</div>}
+        {fileTree.map((node) => (
+          <FileTreeItem
+            key={node.relativePath}
+            node={node}
+            expandedFolders={expandedFolders}
+            setExpandedFolders={setExpandedFolders}
+            onOpenMarkdownFile={onOpenMarkdownFile}
+            onSelectSection={(section) => {
+              setActiveSectionId(section.id);
+            }}
+            onRenameSection={onRenameSection}
+            sectionByPath={new Map(sections.map((section) => [section.path, section]))}
+            activeFilePath={activeFilePath}
+          />
         ))}
       </div>
       <button className="sidebar-settings" onClick={onSettings}>
         <Settings size={15} /> {t("project.settings")}
       </button>
     </aside>
+  );
+}
+
+function FileTreeItem({
+  node,
+  expandedFolders,
+  setExpandedFolders,
+  onOpenMarkdownFile,
+  onSelectSection,
+  onRenameSection,
+  sectionByPath,
+  activeFilePath,
+  depth = 0
+}: {
+  node: FileTreeNode;
+  expandedFolders: Record<string, boolean>;
+  setExpandedFolders: (value: Record<string, boolean>) => void;
+  onOpenMarkdownFile: (path: string) => void;
+  onSelectSection: (section: ManuscriptSection) => void;
+  onRenameSection: (section: ManuscriptSection) => void;
+  sectionByPath: Map<string, ManuscriptSection>;
+  activeFilePath?: string;
+  depth?: number;
+}) {
+  if (node.kind === "directory") {
+    const open = expandedFolders[node.relativePath] ?? depth < 1;
+    return (
+      <div className="tree-block">
+        <button className="tree-folder" style={{ paddingLeft: 8 + depth * 10 }} onClick={() => setExpandedFolders({ ...expandedFolders, [node.relativePath]: !open })}>
+          <ChevronDown className={open ? "chev open" : "chev"} size={15} />
+          <Folder size={14} /> {node.name}
+        </button>
+        <AnimatePresence initial={false}>
+          {open && (
+            <motion.div className="tree-children" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
+              {(node.children ?? []).map((child) => (
+                <FileTreeItem
+                  key={child.relativePath}
+                  node={child}
+                  expandedFolders={expandedFolders}
+                  setExpandedFolders={setExpandedFolders}
+                  onOpenMarkdownFile={onOpenMarkdownFile}
+                  onSelectSection={onSelectSection}
+                  onRenameSection={onRenameSection}
+                  sectionByPath={sectionByPath}
+                  activeFilePath={activeFilePath}
+                  depth={depth + 1}
+                />
+              ))}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    );
+  }
+  const section = sectionByPath.get(node.relativePath);
+  const isMarkdown = node.extension === "md" || node.name.toLowerCase().endsWith(".md");
+  const active = activeFilePath === node.relativePath;
+  return (
+    <div className={active ? "tree-file-row active" : "tree-file-row"}>
+      <button
+        className={isMarkdown ? "tree-file markdown-file" : "tree-file"}
+        style={{ marginLeft: 12 + depth * 10 }}
+        onClick={() => isMarkdown ? onOpenMarkdownFile(node.relativePath) : undefined}
+        title={node.relativePath}
+      >
+        <FileText size={14} /> {section?.title ?? node.name}
+      </button>
+      {section && (
+        <button className="tree-icon-btn" onClick={() => onRenameSection(section)} title="Rename title; file path stays unchanged">
+          <Pencil size={13} />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -951,8 +1187,6 @@ function RightPanel(props: {
   exportProjectFolder: () => void;
   openOutputFolder: () => void;
   openProjectFolder: () => void;
-  settings: AppSettings;
-  setSettings: (settings: AppSettings) => void;
   updateProjectMetadata: (partial: Partial<Pick<ProjectConfig, "title" | "author" | "authors" | "targetJournal" | "manuscriptMode" | "citationStyle" | "exportMode">>) => void;
   combinedDraft: string;
   t: Translate;
@@ -965,8 +1199,7 @@ function RightPanel(props: {
     ["citations", "Cites", <Clipboard size={14} />],
     ["literature", "Library", <Library size={14} />],
     ["claims", "Claims", <Check size={14} />],
-    ["export", props.t("tools.export"), <Download size={14} />],
-    ["settings", props.t("tools.settings"), <Settings size={14} />]
+    ["export", props.t("tools.export"), <Download size={14} />]
   ];
 
   return (
@@ -987,7 +1220,6 @@ function RightPanel(props: {
           {props.tab === "literature" && <LiteratureTool {...props} />}
           {props.tab === "claims" && <ClaimTool {...props} />}
           {props.tab === "export" && <ExportTool {...props} />}
-          {props.tab === "settings" && <SettingsTool {...props} />}
         </motion.div>
       </AnimatePresence>
     </aside>
@@ -1309,14 +1541,32 @@ function ExportTool(props: Parameters<typeof RightPanel>[0]) {
   );
 }
 
-function SettingsTool(props: Parameters<typeof RightPanel>[0]) {
+function SettingsPage({
+  settings,
+  setSettings,
+  onBack,
+  onTestConnection,
+  onFetchModels,
+  models,
+  status,
+  t
+}: {
+  settings: AppSettings;
+  setSettings: (settings: AppSettings) => void;
+  onBack: () => void;
+  onTestConnection: () => void;
+  onFetchModels: () => void;
+  models: string[];
+  status: string;
+  t: Translate;
+}) {
   const themeOptions: Array<[ThemeMode, string]> = [["light", "Light"], ["dark", "Dark"], ["system", "System"], ["eyeCare", "Eye-care"]];
   function updateLlmProvider(provider: LlmProviderKind) {
-    const previous = props.settings.llmProvider;
-    const baseUrl = provider === "anthropic" ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1";
-    const model = provider === "anthropic" ? "claude-3-5-sonnet-latest" : "gpt-4.1-mini";
-    props.setSettings({
-      ...props.settings,
+    const previous = settings.llmProvider;
+    const baseUrl = provider === "anthropic" ? "https://api.anthropic.com/v1" : provider === "local" ? "http://localhost:11434/v1" : "https://api.openai.com/v1";
+    const model = provider === "anthropic" ? "claude-3-5-sonnet-latest" : provider === "local" ? "llama3.1" : "gpt-4.1-mini";
+    setSettings({
+      ...settings,
       llmProvider: {
         ...previous,
         provider,
@@ -1326,53 +1576,107 @@ function SettingsTool(props: Parameters<typeof RightPanel>[0]) {
     });
   }
   return (
-    <>
-      <h2>{props.t("tools.settings")}</h2>
-      <div className="stack">
-        <label>{props.t("settings.language")}
-          <select value={props.settings.language} onChange={(event) => props.setSettings({ ...props.settings, language: event.target.value as Language })}>
-            <option value="en">{props.t("settings.english")}</option>
-            <option value="zh">{props.t("settings.chinese")}</option>
-          </select>
-        </label>
-        <label>{props.t("settings.workspaceRoot")}<input value={props.settings.workspaceRoot} onChange={(event) => props.setSettings({ ...props.settings, workspaceRoot: event.target.value })} /></label>
-        <label>{props.t("settings.defaultMode")}
-          <select value={props.settings.defaultManuscriptMode} onChange={(event) => props.setSettings({ ...props.settings, defaultManuscriptMode: event.target.value as ManuscriptMode })}>
-            <option value="word">word</option>
-            <option value="latex">latex</option>
-            <option value="markdown">markdown</option>
-          </select>
-        </label>
-        <label>{props.t("settings.exportMode")}
-          <select value={props.settings.defaultExportMode} onChange={(event) => props.setSettings({ ...props.settings, defaultExportMode: event.target.value as ManuscriptMode })}>
-            <option value="markdown">markdown</option>
-            <option value="word">word</option>
-            <option value="latex">latex</option>
-          </select>
-        </label>
-        <label>{props.t("settings.colorTheme")}
-          <select value={props.settings.themeMode} onChange={(event) => props.setSettings({ ...props.settings, themeMode: event.target.value as ThemeMode })}>
-            {themeOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}
-          </select>
-        </label>
-        <label>{props.t("settings.provider")}
-          <select
-            value={props.settings.llmProvider.provider}
-            onChange={(event) => updateLlmProvider(event.target.value as LlmProviderKind)}
-          >
-            <option value="openai-compatible">OpenAI-compatible</option>
-            <option value="openai">OpenAI</option>
-            <option value="anthropic">Anthropic</option>
-          </select>
-        </label>
-        <label>{props.t("settings.baseUrl")}<input value={props.settings.llmProvider.baseUrl} onChange={(event) => props.setSettings({ ...props.settings, llmProvider: { ...props.settings.llmProvider, baseUrl: event.target.value } })} /></label>
-        <label>{props.t("settings.apiKey")}<input type="password" value={props.settings.llmProvider.apiKey} onChange={(event) => props.setSettings({ ...props.settings, llmProvider: { ...props.settings.llmProvider, apiKey: event.target.value } })} /></label>
-        <label>{props.t("settings.model")}<input value={props.settings.llmProvider.model} onChange={(event) => props.setSettings({ ...props.settings, llmProvider: { ...props.settings.llmProvider, model: event.target.value } })} /></label>
-        <label>{props.t("settings.temperature")}<input type="number" min="0" max="2" step="0.1" value={props.settings.llmProvider.temperature} onChange={(event) => props.setSettings({ ...props.settings, llmProvider: { ...props.settings.llmProvider, temperature: Number(event.target.value) } })} /></label>
-        <label>{props.t("settings.maxTokens")}<input type="number" min="1" step="100" value={props.settings.llmProvider.maxTokens} onChange={(event) => props.setSettings({ ...props.settings, llmProvider: { ...props.settings.llmProvider, maxTokens: Number(event.target.value) } })} /></label>
-        <label>{props.t("settings.citationStyle")}<input value={props.settings.defaultCitationStyle} onChange={(event) => props.setSettings({ ...props.settings, defaultCitationStyle: event.target.value })} /></label>
+    <main className="settings-page">
+      <div className="settings-header">
+        <div>
+          <p className="eyebrow">{t("tools.settings")}</p>
+          <h1>Settings</h1>
+        </div>
+        <button className="secondary-btn" onClick={onBack}>Back</button>
       </div>
-    </>
+      <div className="settings-grid">
+        <section className="settings-card">
+          <h2>Appearance</h2>
+          <SettingField label={t("settings.colorTheme")} description="Applies immediately across the app.">
+            <select value={settings.themeMode} onChange={(event) => setSettings({ ...settings, themeMode: event.target.value as ThemeMode })}>
+              {themeOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}
+            </select>
+          </SettingField>
+          <SettingField label={t("settings.language")} description="Switches UI language immediately.">
+            <select value={settings.language} onChange={(event) => setSettings({ ...settings, language: event.target.value as Language })}>
+              <option value="en">{t("settings.english")}</option>
+              <option value="zh">{t("settings.chinese")}</option>
+            </select>
+          </SettingField>
+        </section>
+        <section className="settings-card">
+          <h2>Project Defaults</h2>
+          <SettingField label={t("settings.workspaceRoot")} description="Default folder used for new PaperForge workspaces.">
+            <input value={settings.workspaceRoot} onChange={(event) => setSettings({ ...settings, workspaceRoot: event.target.value })} />
+          </SettingField>
+          <SettingField label={t("settings.defaultMode")} description="Default writing/citation mode for new papers.">
+            <select value={settings.defaultManuscriptMode} onChange={(event) => setSettings({ ...settings, defaultManuscriptMode: event.target.value as ManuscriptMode })}>
+              <option value="word">word</option>
+              <option value="latex">latex</option>
+              <option value="markdown">markdown</option>
+            </select>
+          </SettingField>
+          <SettingField label={t("settings.citationStyle")} description="Default citation style metadata.">
+            <input value={settings.defaultCitationStyle} onChange={(event) => setSettings({ ...settings, defaultCitationStyle: event.target.value })} />
+          </SettingField>
+          <SettingField label={t("settings.exportMode")} description="Default export mode for new projects.">
+            <select value={settings.defaultExportMode} onChange={(event) => setSettings({ ...settings, defaultExportMode: event.target.value as ManuscriptMode })}>
+              <option value="markdown">markdown</option>
+              <option value="word">word</option>
+              <option value="latex">latex</option>
+            </select>
+          </SettingField>
+        </section>
+        <section className="settings-card wide-card">
+          <h2>AI Provider</h2>
+          <div className="settings-two-col">
+            <SettingField label={t("settings.provider")} description="OpenAI-compatible is the main supported provider.">
+              <select value={settings.llmProvider.provider} onChange={(event) => updateLlmProvider(event.target.value as LlmProviderKind)}>
+                <option value="openai-compatible">OpenAI-compatible</option>
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="local">Local</option>
+              </select>
+            </SettingField>
+            <SettingField label={t("settings.baseUrl")} description="Provider API base URL, for example https://api.openai.com/v1.">
+              <input value={settings.llmProvider.baseUrl} onChange={(event) => setSettings({ ...settings, llmProvider: { ...settings.llmProvider, baseUrl: event.target.value } })} />
+            </SettingField>
+            <SettingField label={t("settings.apiKey")} description="Stored locally. Never exported or committed.">
+              <input type="password" value={settings.llmProvider.apiKey} onChange={(event) => setSettings({ ...settings, llmProvider: { ...settings.llmProvider, apiKey: event.target.value } })} />
+            </SettingField>
+            <SettingField label={t("settings.model")} description="Choose fetched model or type one manually.">
+              <input list="ai-models" value={settings.llmProvider.model} onChange={(event) => setSettings({ ...settings, llmProvider: { ...settings.llmProvider, model: event.target.value } })} />
+              <datalist id="ai-models">{models.map((model) => <option value={model} key={model} />)}</datalist>
+            </SettingField>
+            <SettingField label={t("settings.temperature")} description="0 is deterministic; higher is more creative.">
+              <input type="number" min="0" max="2" step="0.1" value={settings.llmProvider.temperature} onChange={(event) => setSettings({ ...settings, llmProvider: { ...settings.llmProvider, temperature: Number(event.target.value) } })} />
+            </SettingField>
+            <SettingField label={t("settings.maxTokens")} description="Maximum response length.">
+              <input type="number" min="1" step="100" value={settings.llmProvider.maxTokens} onChange={(event) => setSettings({ ...settings, llmProvider: { ...settings.llmProvider, maxTokens: Number(event.target.value) } })} />
+            </SettingField>
+          </div>
+          <div className="row-actions">
+            <button onClick={onFetchModels}>Fetch Models</button>
+            <button onClick={onTestConnection}>Test Connection</button>
+          </div>
+          {status && <p className="settings-status">{status}</p>}
+        </section>
+        <section className="settings-card">
+          <h2>Export</h2>
+          <p>Markdown package remains the stable export target. Word and LaTeX use Pandoc draft exports and report warnings separately from success.</p>
+        </section>
+        <section className="settings-card">
+          <h2>About</h2>
+          <p>PaperForge v{APP_VERSION}</p>
+          <p>Repository: github.com/YezhiHuan/PaperForge</p>
+        </section>
+      </div>
+    </main>
+  );
+}
+
+function SettingField({ label, description, children }: { label: string; description: string; children: ReactNode }) {
+  return (
+    <label className="setting-field">
+      <span>{label}</span>
+      <small>{description}</small>
+      {children}
+    </label>
   );
 }
 
@@ -1497,6 +1801,61 @@ function ImportProjectModal({
         <input required placeholder="F:\\Papers\\My_Project" value={form.rootPath} onChange={(event) => setForm({ rootPath: event.target.value })} />
         <button className="primary-btn wide"><FolderOpen size={15} /> {t("modal.importFolder")}</button>
       </motion.form>
+    </motion.div>
+  );
+}
+
+function AppDialog({ dialog, onClose }: { dialog: DialogState; onClose: () => void }) {
+  const [value, setValue] = useState(dialog.kind === "input" ? dialog.defaultValue : "");
+  const [error, setError] = useState("");
+  const close = () => {
+    if (dialog.kind === "confirm") dialog.resolve(false);
+    if (dialog.kind === "input") dialog.resolve(null);
+    if (dialog.kind === "message") dialog.resolve();
+    onClose();
+  };
+  const confirm = () => {
+    if (dialog.kind === "confirm") dialog.resolve(true);
+    if (dialog.kind === "message") dialog.resolve();
+    if (dialog.kind === "input") {
+      const validation = dialog.validate?.(value);
+      if (validation) {
+        setError(validation);
+        return;
+      }
+      dialog.resolve(value);
+    }
+    onClose();
+  };
+  return (
+    <motion.div
+      className="modal-backdrop"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      onMouseDown={close}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") close();
+        if (event.key === "Enter" && (event.ctrlKey || dialog.kind !== "input")) confirm();
+      }}
+    >
+      <motion.div className="modal dialog-modal" onMouseDown={(event) => event.stopPropagation()} initial={{ opacity: 0, scale: 0.96, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96 }}>
+        <button type="button" className="close-btn" onClick={close}><X size={16} /></button>
+        <h2>{dialog.title}</h2>
+        <p className="modal-note">{dialog.description}</p>
+        {dialog.kind === "input" && (
+          <>
+            <input autoFocus placeholder={dialog.placeholder} value={value} onChange={(event) => { setValue(event.target.value); setError(""); }} onKeyDown={(event) => { if (event.key === "Enter") confirm(); }} />
+            {error && <span className="field-error">{error}</span>}
+          </>
+        )}
+        <div className="dialog-actions">
+          {dialog.kind !== "message" && <button className="secondary-btn" onClick={close}>Cancel</button>}
+          <button className={dialog.kind === "confirm" && dialog.danger ? "primary-btn danger-confirm" : "primary-btn"} onClick={confirm}>
+            {dialog.kind === "message" ? "OK" : dialog.confirmLabel}
+          </button>
+        </div>
+      </motion.div>
     </motion.div>
   );
 }

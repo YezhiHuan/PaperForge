@@ -4,13 +4,14 @@ use chrono::Utc;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     process::Command,
 };
 use uuid::Uuid;
 
-const APP_VERSION: &str = "2.1.0";
+const APP_VERSION: &str = "2.1.1";
 const PANDOC_INSTALL_COMMAND: &str = "winget install --id JohnMacFarlane.Pandoc -e --source winget --accept-package-agreements --accept-source-agreements --silent";
 const PANDOC_REQUIRED_MESSAGE: &str =
     "Pandoc is required for document conversion. Please install Pandoc and try again.";
@@ -335,6 +336,24 @@ struct AppLog {
     created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FileTreeNode {
+    name: String,
+    path: String,
+    relative_path: String,
+    kind: String,
+    extension: Option<String>,
+    children: Option<Vec<FileTreeNode>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TextFilePayload {
+    path: String,
+    content: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 enum AgentMode {
@@ -503,6 +522,7 @@ enum LlmProviderKind {
     OpenaiCompatible,
     Openai,
     Anthropic,
+    Local,
 }
 
 fn default_llm_provider_kind() -> LlmProviderKind {
@@ -590,6 +610,30 @@ fn app_root() -> Result<PathBuf, String> {
     std::env::current_dir().map_err(|err| err.to_string())
 }
 
+fn resolve_app_path(path: impl AsRef<Path>) -> Result<PathBuf, String> {
+    let path = path.as_ref();
+    if path.as_os_str().is_empty() {
+        return Err("Path is required".to_string());
+    }
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        Ok(app_root()?.join(path))
+    }
+}
+
+fn canonical_existing_path(path: impl AsRef<Path>) -> Result<PathBuf, String> {
+    let absolute = resolve_app_path(path)?;
+    if !absolute.exists() {
+        return Err("Path does not exist".to_string());
+    }
+    absolute.canonicalize().map_err(|err| err.to_string())
+}
+
+fn export_output_path(path: impl AsRef<Path>) -> Result<String, String> {
+    Ok(canonical_existing_path(path)?.to_string_lossy().to_string())
+}
+
 fn local_dir() -> Result<PathBuf, String> {
     let path = app_root()?.join(".local");
     fs::create_dir_all(&path).map_err(|err| err.to_string())?;
@@ -612,12 +656,14 @@ fn normalize_llm_settings(mut settings: LlmProviderSettings) -> LlmProviderSetti
     if settings.base_url.trim().is_empty() {
         settings.base_url = match settings.provider {
             LlmProviderKind::Anthropic => "https://api.anthropic.com/v1".to_string(),
+            LlmProviderKind::Local => "http://localhost:11434/v1".to_string(),
             _ => "https://api.openai.com/v1".to_string(),
         };
     }
     if settings.model.trim().is_empty() {
         settings.model = match settings.provider {
             LlmProviderKind::Anthropic => "claude-3-5-sonnet-latest".to_string(),
+            LlmProviderKind::Local => "llama3.1".to_string(),
             _ => default_llm_model(),
         };
     }
@@ -631,6 +677,7 @@ fn ai_model_value_to_settings(value: &serde_json::Value) -> Option<LlmProviderSe
     let provider = match value.get("provider")?.as_str()? {
         "anthropic" => LlmProviderKind::Anthropic,
         "openai" => LlmProviderKind::Openai,
+        "local" => LlmProviderKind::Local,
         _ => LlmProviderKind::OpenaiCompatible,
     };
     Some(normalize_llm_settings(LlmProviderSettings {
@@ -788,6 +835,73 @@ fn post_json_with_curl(url: &str, headers: &[String], body: &serde_json::Value) 
     serde_json::from_str(&body_text).map_err(|err| format!("LLM response JSON parse failed: {}", err))
 }
 
+fn get_json_with_curl(url: &str, headers: &[String]) -> Result<serde_json::Value, String> {
+    let id = Uuid::new_v4().to_string();
+    let dir = local_dir()?.join("llm-requests");
+    fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    let config_path = dir.join(format!("{}.curl", id));
+    let mut config = vec![
+        "silent".to_string(),
+        "show-error".to_string(),
+        "location".to_string(),
+        "get".to_string(),
+        "write-out = \"\\n%{http_code}\"".to_string(),
+        format!("url = \"{}\"", curl_config_quote(url)),
+    ];
+    for header in headers {
+        config.push(format!("header = \"{}\"", curl_config_quote(header)));
+    }
+    fs::write(&config_path, config.join("\n")).map_err(|err| err.to_string())?;
+    let output = Command::new("curl")
+        .arg("--config")
+        .arg(&config_path)
+        .output()
+        .map_err(|err| format!("curl request failed to start: {}", err));
+    let _ = fs::remove_file(&config_path);
+    let output = output?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let mut lines = stdout.lines().collect::<Vec<_>>();
+    let status = lines.pop().unwrap_or("").trim().to_string();
+    let body_text = lines.join("\n");
+    if !output.status.success() {
+        return Err(if stderr.is_empty() {
+            format!("curl request failed with HTTP {}: {}", status, body_text)
+        } else {
+            format!("curl request failed: {} {}", stderr, body_text)
+        });
+    }
+    if !status.starts_with('2') {
+        return Err(format!("LLM API error {}: {}", status, body_text));
+    }
+    serde_json::from_str(&body_text).map_err(|err| format!("LLM response JSON parse failed: {}", err))
+}
+
+fn validate_ai_settings(settings: &LlmProviderSettings) -> Result<LlmProviderSettings, String> {
+    let provider = normalize_llm_settings(settings.clone());
+    if provider.api_key.trim().is_empty() {
+        return Err("API key is required. Configure it in Settings.".to_string());
+    }
+    if provider.model.trim().is_empty() {
+        return Err("Model is required. Choose or enter a model in Settings.".to_string());
+    }
+    Ok(provider)
+}
+
+fn provider_auth_headers(provider: &LlmProviderSettings) -> Vec<String> {
+    match provider.provider {
+        LlmProviderKind::Anthropic => vec![
+            "Content-Type: application/json".to_string(),
+            format!("x-api-key: {}", provider.api_key.trim()),
+            "anthropic-version: 2023-06-01".to_string(),
+        ],
+        LlmProviderKind::Openai | LlmProviderKind::OpenaiCompatible | LlmProviderKind::Local => vec![
+            "Content-Type: application/json".to_string(),
+            format!("Authorization: Bearer {}", provider.api_key.trim()),
+        ],
+    }
+}
+
 fn call_llm(settings: &AppSettings, system_prompt: &str, user_prompt: &str) -> Result<String, String> {
     let provider = resolve_llm_settings(settings)?;
     match provider.provider {
@@ -809,7 +923,7 @@ fn call_llm(settings: &AppSettings, system_prompt: &str, user_prompt: &str) -> R
             )?;
             parse_anthropic_message_content(&value)
         }
-        LlmProviderKind::Openai | LlmProviderKind::OpenaiCompatible => {
+        LlmProviderKind::Openai | LlmProviderKind::OpenaiCompatible | LlmProviderKind::Local => {
             let value = post_json_with_curl(
                 &join_url(&provider.base_url, "chat/completions"),
                 &[
@@ -1229,6 +1343,14 @@ fn section_from_manifest(
     })
 }
 
+fn manifest_file_name(manifest: &ManuscriptManifestSection) -> String {
+    PathBuf::from(&manifest.path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("section.md")
+        .to_string()
+}
+
 fn manifest_from_section(section: &ManuscriptSection) -> ManuscriptManifestSection {
     ManuscriptManifestSection {
         id: section.id.clone(),
@@ -1508,6 +1630,59 @@ impl ProjectFileSystem {
         }
         figures.sort();
         Ok(figures)
+    }
+
+    fn file_tree(&self) -> Result<Vec<FileTreeNode>, String> {
+        let mut children = vec![];
+        self.collect_tree(&self.root, "", &mut children)?;
+        children.sort_by(|left, right| left.kind.cmp(&right.kind).then_with(|| left.name.cmp(&right.name)));
+        Ok(children)
+    }
+
+    fn collect_tree(&self, dir: &Path, rel: &str, nodes: &mut Vec<FileTreeNode>) -> Result<(), String> {
+        if !dir.exists() {
+            return Ok(());
+        }
+        let skip = ["node_modules", "target", "dist", ".git", ".local", ".vite", "logs"];
+        for entry in fs::read_dir(dir).map_err(|err| err.to_string())? {
+            let entry = entry.map_err(|err| err.to_string())?;
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if skip.iter().any(|item| item.eq_ignore_ascii_case(&name)) {
+                continue;
+            }
+            let relative = if rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{}/{}", rel, name)
+            };
+            if relative.to_lowercase().contains("ai-models.json") {
+                continue;
+            }
+            if path.is_dir() {
+                let mut children = vec![];
+                self.collect_tree(&path, &relative, &mut children)?;
+                children.sort_by(|left, right| left.kind.cmp(&right.kind).then_with(|| left.name.cmp(&right.name)));
+                nodes.push(FileTreeNode {
+                    name,
+                    path: relative.clone(),
+                    relative_path: relative,
+                    kind: "directory".to_string(),
+                    extension: None,
+                    children: Some(children),
+                });
+            } else {
+                nodes.push(FileTreeNode {
+                    name,
+                    path: relative.clone(),
+                    relative_path: relative,
+                    kind: "file".to_string(),
+                    extension: path.extension().and_then(|value| value.to_str()).map(|value| value.to_ascii_lowercase()),
+                    children: None,
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1951,6 +2126,45 @@ fn save_settings(mut settings: AppSettings) -> Result<AppSettings, String> {
 }
 
 #[tauri::command]
+fn test_ai_connection(settings: AppSettings) -> Result<String, String> {
+    let provider = validate_ai_settings(&settings.llm_provider)?;
+    let content = call_llm(
+        &AppSettings { llm_provider: provider, ..settings },
+        "Reply with exactly: PaperForge AI connection ok",
+        "Connection test.",
+    )?;
+    Ok(if content.trim().is_empty() {
+        "AI connection succeeded.".to_string()
+    } else {
+        format!("AI connection succeeded: {}", content.lines().next().unwrap_or("").trim())
+    })
+}
+
+#[tauri::command]
+fn fetch_ai_models(settings: AppSettings) -> Result<Vec<String>, String> {
+    let provider = validate_ai_settings(&settings.llm_provider)?;
+    if matches!(provider.provider, LlmProviderKind::Anthropic) {
+        return Err("Model fetching is not supported for Anthropic in this build.".to_string());
+    }
+    let value = get_json_with_curl(&join_url(&provider.base_url, "models"), &provider_auth_headers(&provider))?;
+    let models = value
+        .get("data")
+        .and_then(|data| data.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("id").and_then(|id| id.as_str()).map(String::from))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if models.is_empty() {
+        Err("No models returned by provider.".to_string())
+    } else {
+        Ok(models)
+    }
+}
+
+#[tauri::command]
 fn create_project(input: ProjectCreateInput) -> Result<ProjectConfig, String> {
     let settings = read_settings()?;
     let title = if input.title.trim().is_empty() {
@@ -2227,29 +2441,50 @@ fn export_project_manifest(project_id: String) -> Result<String, String> {
 #[tauri::command]
 fn list_sections(project_id: String) -> Result<Vec<ManuscriptSection>, String> {
     let mut project = project_by_id(&project_id)?;
-    let mut sections = project
-        .manuscript
-        .sections
-        .iter()
-        .map(|section| section_from_manifest(&project, section))
-        .collect::<Result<Vec<_>, _>>()?;
-    let scanned = scan_existing_section_files(&project)?;
+    let root = PathBuf::from(&project.root_path);
+    let mut sections = vec![];
+    let mut seen_paths = HashSet::new();
+    let mut seen_filenames = HashSet::new();
     let mut changed = false;
+    for manifest in &project.manuscript.sections {
+        if !root.join(&manifest.path).is_file() {
+            changed = true;
+            continue;
+        }
+        let filename = manifest_file_name(manifest);
+        if !seen_paths.insert(manifest.path.clone()) || !seen_filenames.insert(filename) {
+            changed = true;
+            continue;
+        }
+        sections.push(section_from_manifest(&project, manifest)?);
+    }
+    let scanned = scan_existing_section_files(&project)?;
+    let mut next_order = sections
+        .iter()
+        .map(|section| section.order)
+        .max()
+        .unwrap_or(0)
+        + 1;
     for section in scanned {
-        if !sections.iter().any(|item| item.path == section.path || item.filename == section.filename) {
+        if !seen_paths.contains(&section.path) && !seen_filenames.contains(&section.filename) {
+            let mut section = section;
+            section.order = next_order;
+            next_order += 1;
+            seen_paths.insert(section.path.clone());
+            seen_filenames.insert(section.filename.clone());
             sections.push(section);
             changed = true;
         }
     }
+    sections.sort_by(|left, right| {
+        left.order
+            .cmp(&right.order)
+            .then_with(|| left.path.cmp(&right.path))
+    });
     if changed {
-        sections.sort_by_key(|section| section.path.clone());
-        for (index, section) in sections.iter_mut().enumerate() {
-            section.order = (index + 1) as u32;
-        }
         project.manuscript.sections = sections.iter().map(manifest_from_section).collect();
         update_project_config(project)?;
     }
-    sections.sort_by_key(|section| section.order);
     Ok(sections)
 }
 
@@ -2383,6 +2618,31 @@ fn list_project_tree(_project_id: String) -> Result<Vec<String>, String> {
         "exports".to_string(),
         ".paperforge".to_string(),
     ])
+}
+
+#[tauri::command]
+fn list_project_files(project_id: String) -> Result<Vec<FileTreeNode>, String> {
+    let project = project_by_id(&project_id)?;
+    ProjectFileSystem::new(&project)?.file_tree()
+}
+
+#[tauri::command]
+fn read_text_file(project_id: String, path: String) -> Result<TextFilePayload, String> {
+    let project = project_by_id(&project_id)?;
+    let pfs = ProjectFileSystem::new(&project)?;
+    let clean = pfs.clean_relative_path(&path)?;
+    let content = pfs.read_project_file(&clean)?;
+    Ok(TextFilePayload { path: clean, content })
+}
+
+#[tauri::command]
+fn write_text_file(project_id: String, path: String, content: String) -> Result<TextFilePayload, String> {
+    let project = project_by_id(&project_id)?;
+    let pfs = ProjectFileSystem::new(&project)?;
+    let clean = pfs.clean_relative_path(&path)?;
+    pfs.write_project_file(&clean, &content)?;
+    sync_project_after_agent_write(&project, &clean)?;
+    Ok(TextFilePayload { path: clean, content })
 }
 
 fn bib_field(body: &str, field: &str) -> String {
@@ -3158,7 +3418,7 @@ fn export_markdown_package(project_id: String) -> Result<ExportJob, String> {
         project_id,
         mode: ManuscriptMode::Markdown,
         status: ExportStatus::Success,
-        output_path: output.to_string_lossy().to_string(),
+        output_path: export_output_path(&output)?,
         logs: vec![
             "Markdown package exported.".to_string(),
             "Includes manifest.json, paper.md, sections/, references/, attachments/, export-report.json.".to_string(),
@@ -3192,7 +3452,7 @@ fn export_project_folder(project_id: String) -> Result<ExportJob, String> {
         project_id,
         mode: ManuscriptMode::Markdown,
         status: ExportStatus::Success,
-        output_path: output.to_string_lossy().to_string(),
+        output_path: export_output_path(&output)?,
         logs: vec!["Project folder snapshot exported.".to_string()],
         created_at: now_iso(),
     })
@@ -3259,7 +3519,7 @@ fn export_word_draft(project_id: String) -> Result<ExportJob, String> {
         project_id,
         mode: ManuscriptMode::Word,
         status: ExportStatus::Success,
-        output_path: output.to_string_lossy().to_string(),
+        output_path: export_output_path(&output)?,
         logs,
         created_at: now_iso(),
     })
@@ -3301,7 +3561,7 @@ fn export_latex(project_id: String) -> Result<ExportJob, String> {
         project_id,
         mode: ManuscriptMode::Latex,
         status: ExportStatus::Success,
-        output_path: output.to_string_lossy().to_string(),
+        output_path: export_output_path(&output)?,
         logs,
         created_at: now_iso(),
     })
@@ -3324,7 +3584,7 @@ fn export_markdown_pandoc(project_id: String) -> Result<ExportJob, String> {
         project_id,
         mode: ManuscriptMode::Markdown,
         status: ExportStatus::Success,
-        output_path: output.to_string_lossy().to_string(),
+        output_path: export_output_path(&output)?,
         logs: vec![
             "combined.md generated.".to_string(),
             format!("Pandoc command: {}", command),
@@ -3335,10 +3595,7 @@ fn export_markdown_pandoc(project_id: String) -> Result<ExportJob, String> {
 
 #[tauri::command]
 fn open_path(path: String) -> Result<bool, String> {
-    let target = PathBuf::from(path);
-    if !target.exists() {
-        return Err("Path does not exist".to_string());
-    }
+    let target = canonical_existing_path(PathBuf::from(path.trim()))?;
     #[cfg(target_os = "windows")]
     let mut command = {
         let mut command = std::process::Command::new("explorer");
@@ -3381,6 +3638,9 @@ pub fn run() {
             create_section,
             rename_section,
             list_project_tree,
+            list_project_files,
+            read_text_file,
+            write_text_file,
             parse_bibtex,
             save_bibtex,
             list_references,
@@ -3405,6 +3665,8 @@ pub fn run() {
             init_workspace,
             read_settings,
             save_settings,
+            test_ai_connection,
+            fetch_ai_models,
             generate_ai_proposal,
             apply_ai_proposal,
             list_agent_skills,
@@ -3672,12 +3934,117 @@ mod tests {
             let sections = list_sections(project.id.clone()).expect("sections");
             assert_eq!(sections.len(), 2);
             assert!(sections.iter().any(|section| section.filename == "02_existing.md"));
+            assert_eq!(
+                sections
+                    .iter()
+                    .map(|section| section.filename.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["01_known.md", "02_existing.md"]
+            );
             let updated = project_by_id(&project.id).expect("updated project");
             assert!(updated
                 .manuscript
                 .sections
                 .iter()
                 .any(|section| section.path == "manuscript/sections/02_existing.md"));
+        });
+    }
+
+    #[test]
+    fn missing_manifest_section_is_not_returned_and_manifest_is_synced() {
+        with_temp_cwd("missing_section", |_dir| {
+            let project = create_project(create_input(
+                "Missing Paper",
+                SectionNamingMode::Numbered,
+                vec!["Present", "Gone"],
+            ))
+            .expect("project");
+            let root = PathBuf::from(&project.root_path);
+            fs::remove_file(root.join("manuscript/sections/02_gone.md")).expect("remove section");
+
+            let sections = list_sections(project.id.clone()).expect("sections");
+
+            assert_eq!(sections.len(), 1);
+            assert_eq!(sections[0].filename, "01_present.md");
+            assert!(!sections.iter().any(|section| section.filename == "02_gone.md"));
+            let updated = project_by_id(&project.id).expect("updated project");
+            assert_eq!(updated.manuscript.sections.len(), 1);
+            assert_eq!(
+                updated.manuscript.sections[0].path,
+                "manuscript/sections/01_present.md"
+            );
+        });
+    }
+
+    #[test]
+    fn word_and_latex_pandoc_args_stay_project_relative() {
+        let word_args = word_pandoc_args(false);
+        assert!(word_args.contains(&"exports/_intermediate/paper-word.md".to_string()));
+        assert!(word_args.contains(&"exports/word/paper.docx".to_string()));
+        assert!(!word_args.iter().any(|arg| arg.contains("workspace/papers")));
+
+        let latex_args = latex_pandoc_args();
+        assert!(latex_args.contains(&"exports/_intermediate/paper-latex.md".to_string()));
+        assert!(latex_args.contains(&"exports/latex/paper.tex".to_string()));
+        assert!(!latex_args.iter().any(|arg| arg.contains("workspace/papers")));
+    }
+
+    #[test]
+    fn relative_open_path_resolves_under_app_root() {
+        with_temp_cwd("open_path", |_dir| {
+            fs::create_dir_all("workspace/papers/Paper/exports/word").expect("exports dir");
+            let resolved = canonical_existing_path("workspace/papers/Paper/exports/word")
+                .expect("resolved");
+            assert!(resolved.is_absolute());
+            assert!(resolved.ends_with("workspace/papers/Paper/exports/word"));
+        });
+    }
+
+    #[test]
+    fn project_file_tree_reads_real_markdown_files() {
+        with_temp_cwd("file_tree", |_dir| {
+            let project = create_project(create_input(
+                "Tree Paper",
+                SectionNamingMode::Numbered,
+                vec!["Intro"],
+            ))
+            .expect("project");
+            let root = PathBuf::from(&project.root_path);
+            fs::create_dir_all(root.join("references/notes")).expect("notes dir");
+            fs::write(root.join("references/notes/idea.md"), "# Idea\n\nNote.").expect("note");
+
+            let tree = list_project_files(project.id.clone()).expect("tree");
+            let raw = serde_json::to_string(&tree).expect("tree json");
+            assert!(raw.contains("manuscript/sections/01_intro.md"));
+            assert!(raw.contains("references/notes/idea.md"));
+            assert!(!raw.contains("ai-models.json"));
+        });
+    }
+
+    #[test]
+    fn project_text_file_read_write_stays_in_project_root() {
+        with_temp_cwd("file_edit", |_dir| {
+            let project = create_project(create_input(
+                "Edit File Paper",
+                SectionNamingMode::Numbered,
+                vec![],
+            ))
+            .expect("project");
+            let root = PathBuf::from(&project.root_path);
+            fs::create_dir_all(root.join("references/notes")).expect("notes dir");
+            fs::write(root.join("references/notes/note.md"), "# Note").expect("note");
+
+            let read = read_text_file(project.id.clone(), "references/notes/note.md".to_string())
+                .expect("read");
+            assert_eq!(read.content, "# Note");
+            let written = write_text_file(
+                project.id.clone(),
+                "references/notes/note.md".to_string(),
+                "# Note\n\nSaved.".to_string(),
+            )
+            .expect("write");
+            assert_eq!(written.content, "# Note\n\nSaved.");
+            assert!(read_text_file(project.id.clone(), "../outside.md".to_string()).is_err());
         });
     }
 

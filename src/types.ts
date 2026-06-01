@@ -8,7 +8,7 @@ export type ExportStatus = "pending" | "running" | "success" | "failed";
 export type AppLogLevel = "info" | "warning" | "error" | "success";
 export type ThemeMode = "light" | "dark" | "system" | "eyeCare";
 export type Language = "en" | "zh";
-export type LlmProviderKind = "openai-compatible" | "openai" | "anthropic";
+export type LlmProviderKind = "openai-compatible" | "openai" | "anthropic" | "local";
 export type ExportWarningSeverity = "info" | "warning" | "error";
 export type SectionNamingMode = "numbered" | "slugOnly";
 export type SectionTemplateId = "empty" | "standard" | "engineeringSimulation" | "review";
@@ -275,6 +275,13 @@ export interface WorkspaceConfig {
 export interface FileTreeNode {
   name: string;
   path: string;
-  kind: "file" | "folder";
+  relativePath: string;
+  kind: "file" | "directory";
+  extension?: string;
   children?: FileTreeNode[];
+}
+
+export interface TextFilePayload {
+  path: string;
+  content: string;
 }

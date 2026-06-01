@@ -16,9 +16,9 @@ The source repository must ignore `workspace/`.
 
 ## Current Release Rules
 
-- Current product version is `2.1.0`.
+- Current product version is `2.1.1`.
 - App name is `PaperForge`.
-- App title must show `PaperForge v2.1.0`.
+- App title must show `PaperForge v2.1.1`.
 - Every source change must update `CHANGELOG.md`.
 - User-facing feature changes must update `README.md`.
 - `npm run tauri dev` and `npm run tauri:dev` must remain runnable.
@@ -111,10 +111,13 @@ Markdown / Pandoc mode:
 
 - Left panel: workspace and project explorer
 - Center panel: manuscript editor / preview
-- Right panel: AI assistant / citation tasks / literature search / export / settings
+- Right panel: AI assistant / citation tasks / literature search / export
 - Settings entry: sidebar footer
+- Settings must remain a standalone page unless explicitly changed.
 - Keep sidebar/dropdown contrast accessible in all themes.
 - Settings select/toggle changes apply immediately.
+- Do not use `window.alert`, `window.prompt`, or `window.confirm`.
+- Use app-level modal/dialog components for confirmations, errors, and text input.
 - Do not reintroduce the bottom activity/export status strip unless explicitly requested.
 - Do not add dashboard-level export controls unless explicitly requested.
 - Do not include per-paper Git controls in MVP UI.
@@ -129,6 +132,10 @@ Markdown / Pandoc mode:
 - Word/LaTeX exporters should use staged export architecture, not fragile ad hoc hacks.
 - Do not hardcode user-specific paths.
 - Do not hardcode API keys.
+- AI API keys must not be logged, exported, or committed.
+- File tree must reflect real project files and stay scoped to the current project root.
+- Markdown files should be openable even if they are not manuscript sections.
+- Export success must not be converted to failure because of post-processing or open-folder warnings.
 - Use file-system-safe project structures.
 
 ## Commands
