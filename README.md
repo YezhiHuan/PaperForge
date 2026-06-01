@@ -1,6 +1,6 @@
 # PaperForge
 
-Current version: `2.2.1`
+Current version: `2.2.2`
 
 PaperForge is a local-first AI manuscript writing desktop app. It organizes papers as local folders and connects Markdown sections, references, attachments, exports, and replaceable AI model settings.
 
@@ -29,7 +29,7 @@ npm run build
 npm run tauri build
 ```
 
-Lint is not configured in v2.2.1.
+Lint is not configured in v2.2.2.
 
 ## Workspace Init
 
@@ -57,7 +57,7 @@ workspace/
 
 ```json
 {
-  "version": "2.2.1",
+  "version": "2.2.2",
   "workspaceName": "workspace",
   "createdAt": "...",
   "updatedAt": "...",
@@ -116,6 +116,13 @@ Any text-format file under the project root can be opened from the **Files** tab
 After running any export, the right-panel **Export** tab shows a status pill (`success` / `warning` / `failed` / `running`), a cleaned-up output path (the Windows `\\?\` prefix is stripped, backslashes are normalized to forward slashes), a **Copy path** button, an **Open output folder** button, collapsible **Details** with the raw log lines, and per-warning cards with severity icons. The toast in the activity log no longer shows the raw `\\?\`-prefixed path.
 
 
+## v2.2.2 Navigation, Full Preview And UTF-8 Logging
+
+- **UTF-8 safe LLM payload logging**: the LLM debug log walker no longer uses ``s.replace_range(8..s.len() - 4, "****")``, which used to panic with ``end of range should be a character boundary`` whenever the body contained Chinese, emoji, or accented Latin text. Two char-counted helpers (``safe_take_chars`` and ``safe_redact_middle_chars``) now drive the masker and the preview length cap. Regression tests cover long Chinese and emoji payloads.
+- **Full Preview lives in Writing**: the combined draft preview moved from the bottom-right export strip into a third tab in the Writing toolbar. The Writing page now switches between **Edit**, **File Preview** and **Full Preview**; the right panel no longer duplicates the full draft inside the Export tab.
+- **Right panel and top bar trimmed**: the right-side ``Cites``, ``Claims``, and ``Library`` tabs are gone. The ``ToolTab`` type is now ``info | agent | references | export``, and the top bar keeps only the **References** entry. The ``CitationTool``, ``LiteratureTool``, and ``ClaimTool`` components stay in the source so the underlying data paths can be re-wired later.
+- **Plain chat is tools-free by design**: ``build_openai_chat_body`` keeps sending ``tool_choice: "none"``, ``parallel_tool_calls: false``, and no ``tools`` key, so a "你好" prompt never carries tool calls and never trips the ``invalid function arguments json string`` error from OpenAI-compatible gateways. The ``agent_chat_with_tools`` route still ships a hard-coded JSON Schema tool array when the user explicitly opts into file actions.
+- i18n: added ``writing.fullPreview``, ``writing.fullPreviewEmpty``, and ``writing.fullPreviewHint`` in English and Chinese.
 ## v2.2.1 Agent And Top Bar
 
 - **Agent tool call JSON fixed**: `agent_chat_with_tools` builds the OpenAI Chat Completions body with a hard-coded JSON Schema tool array (`list_project_files`, `read_file`, `write_file`, `delete_file`) and sends `tool_call.function.arguments` as a JSON string. No more "invalid function arguments json string" errors from gateways.
@@ -125,7 +132,7 @@ After running any export, the right-panel **Export** tab shows a status pill (`s
 - i18n for the new strings is in both English and Chinese.
 ## LLM Settings
 
-v2.2.1 keeps Settings as a standalone page. Open Settings from the top bar or sidebar footer; it no longer occupies the manuscript editor or right panel.
+v2.2.2 keeps Settings as a standalone page. Open Settings from the top bar or sidebar footer; it no longer occupies the manuscript editor or right panel.
 
 PaperForge connects the Agent and AI proposal flow to real model providers.
 
@@ -230,7 +237,7 @@ PaperForge does not generate Zotero Word fields. Use Zotero Word plugin for fina
 
 ## Export
 
-v2.2.1 supports:
+v2.2.2 supports:
 
 - Export JSON: writes current paper config to `exports/json/paperforge.json`
 - Export Markdown: writes a package under `exports/markdown/` with `paper.md`, sections, references, attachments, claims, and `export-report.json`
@@ -262,7 +269,7 @@ PaperForge also checks common Windows install locations such as `C:\Program File
 
 ## UI And Theme
 
-The app title displays `PaperForge v2.2.1`.
+The app title displays `PaperForge v2.2.2`.
 
 Default theme is light. Settings can switch light, dark, or eye-care theme. Production Windows desktop builds do not show an extra terminal window.
 
@@ -288,7 +295,7 @@ workspace/.paperforge/ai-models.json
 
 The repository ignores generated workspaces and local secrets.
 
-## v2.2.1 Limits
+## v2.2.2 Limits
 
 - Direct global `paperforge` command may require `npm link` or package installation; npm scripts work from the clone.
 - File picker is not implemented; workspace/project paths can be typed.

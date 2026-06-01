@@ -313,6 +313,9 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   font-family: "Cascadia Code", "JetBrains Mono", monospace;
 }
 .preview { line-height: 1.72; }
+  .preview-full { display: flex; flex-direction: column; }
+  .full-preview-body { flex: 1; overflow: auto; padding: 4px 8px 0; }
+  .preview-full .manuscript-empty { height: 100%; }
 .preview h1, .preview h2, .preview h3 { color: #fff8d8; }
 :root[data-theme="light"] .preview h1,
 :root[data-theme="light"] .preview h2,

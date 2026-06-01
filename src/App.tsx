@@ -62,7 +62,7 @@ import type {
   ThemeMode
 } from "./types";
 
-type ToolTab = "info" | "agent" | "references" | "citations" | "literature" | "claims" | "export";
+type ToolTab = "info" | "agent" | "references" | "export";
 type Translate = (key: MessageKey) => string;
 type AppView = "main" | "settings";
 type ActiveMarkdownFile = { path: string; name: string; content: string; originalContent: string };
@@ -127,7 +127,7 @@ function App() {
   const [activeProject, setActiveProject] = useState<ProjectConfig | null>(null);
   const [sections, setSections] = useState<ManuscriptSection[]>([]);
   const [activeSectionId, setActiveSectionId] = useState("");
-  const [editorMode, setEditorMode] = useState<"edit" | "preview">("edit");
+  const [editorMode, setEditorMode] = useState<"edit" | "preview" | "full">("edit");
   const [references, setReferences] = useState<ReferenceItem[]>([]);
   const [citationTasks, setCitationTasks] = useState<CitationTask[]>([]);
   const [literature, setLiterature] = useState<LiteratureItem[]>([]);
@@ -756,7 +756,6 @@ function App() {
         version={APP_VERSION}
         t={tr}
         language={settings.language}
-        onOpenLiterature={() => setToolTab("literature")}
         onOpenReferences={() => setToolTab("references")}
       />
 
@@ -829,6 +828,9 @@ function App() {
                 <button disabled={!activeDocument} className={editorMode === "preview" ? "seg active" : "seg"} onClick={() => setEditorMode("preview")}>
                   {tr("actions.preview")}
                 </button>
+                <button disabled={!activeDocument} className={editorMode === "full" ? "seg active" : "seg"} onClick={() => setEditorMode("full")} title={tr("writing.fullPreview")}>
+                  <FileText size={14} /> {tr("writing.fullPreview")}
+                </button>
                 <button className="secondary-btn" onClick={createSectionFromPrompt}>
                   <Plus size={15} /> {tr("actions.createSection")}
                 </button>
@@ -854,7 +856,7 @@ function App() {
                     value={activeDocument.content}
                     onChange={(event) => updateActiveSection(event.target.value)}
                   />
-                ) : codeView ? (
+                ) : editorMode === "preview" && codeView ? (
                   <motion.div
                     key="code"
                     variants={panelVariants}
@@ -871,7 +873,7 @@ function App() {
                       </div>
                     ))}
                   </motion.div>
-                ) : (
+                ) : editorMode === "preview" ? (
                   <motion.article
                     key="preview"
                     variants={panelVariants}
@@ -881,6 +883,31 @@ function App() {
                     className="preview"
                     dangerouslySetInnerHTML={{ __html: markdownToPreview(activeDocument.content) }}
                   />
+                ) : (
+                  <motion.article
+                    key="full"
+                    variants={panelVariants}
+                    initial="hidden"
+                    animate="show"
+                    exit="exit"
+                    className="preview preview-full"
+                  >
+                    {(() => {
+                      const combined = mergeSections(sections);
+                      if (!combined.trim()) {
+                        return (
+                          <div className="manuscript-empty">
+                            <FileText size={34} />
+                            <h2>{tr("writing.fullPreviewEmpty")}</h2>
+                            <p>{tr("writing.fullPreviewHint")}</p>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div className="full-preview-body" dangerouslySetInnerHTML={{ __html: markdownToPreview(combined) }} />
+                      );
+                    })()}
+                  </motion.article>
                 )}
               </AnimatePresence>
               );
@@ -1003,7 +1030,6 @@ function TopBar({
   version,
   t,
   language,
-  onOpenLiterature,
   onOpenReferences,
 }: {
   project: ProjectConfig | null;
@@ -1013,7 +1039,6 @@ function TopBar({
   version: string;
   t: Translate;
   language: Language;
-  onOpenLiterature: () => void;
   onOpenReferences: () => void;
 }) {
   return (
@@ -1025,9 +1050,6 @@ function TopBar({
       </button>
       <div className="topbar-project">{project ? `${displayTitle(project.title, language)} · ${project.manuscriptMode}` : t("app.tagline")}</div>
       <div className="topbar-actions">
-        <button className="secondary-btn" onClick={onOpenLiterature} title="Open Literature Library">
-          <Library size={15} /> Literature
-        </button>
         <button className="secondary-btn" onClick={onOpenReferences} title="Open Reference List">
           <BookOpen size={15} /> References
         </button>
@@ -1384,10 +1406,7 @@ function RightPanel(props: {
   const tabs: Array<[ToolTab, string, ReactNode]> = [
     ["info", props.t("project.projectInfo"), <FileText size={14} />],
     ["agent", "Agent", <Brain size={14} />],
-    ["references", "Refs", <BookOpen size={14} />],
-    ["citations", "Cites", <Clipboard size={14} />],
-    ["literature", "Library", <Library size={14} />],
-    ["claims", "Claims", <Check size={14} />],
+    ["references", props.t("project.references"), <BookOpen size={14} />],
     ["export", props.t("tools.export"), <Download size={14} />]
   ];
 
@@ -1405,9 +1424,7 @@ function RightPanel(props: {
           {props.tab === "info" && <ProjectInfoTool {...props} />}
           {props.tab === "agent" && <AgentTool {...props} />}
           {props.tab === "references" && <ReferenceTool {...props} />}
-          {props.tab === "citations" && <CitationTool {...props} />}
-          {props.tab === "literature" && <LiteratureTool {...props} />}
-          {props.tab === "claims" && <ClaimTool {...props} />}
+          {props.tab === "export" && <ExportTool {...props} />}
           {props.tab === "export" && <ExportTool {...props} />}
         </motion.div>
       </AnimatePresence>
@@ -1881,10 +1898,6 @@ function ExportTool(props: Parameters<typeof RightPanel>[0]) {
           onOpenOutputFolder={props.openOutputFolder}
         />
       )}
-      <details>
-        <summary>{props.t("export.combinedPreview")}</summary>
-        <pre>{props.combinedDraft.slice(0, 1200)}</pre>
-      </details>
     </>
   );
 }

@@ -51,6 +51,13 @@ export const messages = {
       emptyManuscript: "Empty manuscript",
       mvpFolder: "MVP folder"
     },
+    writing: {
+      editor: "Editor",
+      filePreview: "File Preview",
+      fullPreview: "Full Preview",
+      fullPreviewEmpty: "No merged draft yet",
+      fullPreviewHint: "Create or save a section to see the combined preview here."
+    },
     modal: {
       createTitle: "Create paper project",
       paperTitle: "Paper title (optional)",
@@ -152,6 +159,13 @@ export const messages = {
       newSection: "新建章节",
       emptyManuscript: "空稿件",
       mvpFolder: "MVP 文件夹"
+    },
+    writing: {
+      editor: "编辑",
+      filePreview: "当前文件预览",
+      fullPreview: "总体预览",
+      fullPreviewEmpty: "暂无合并稿件",
+      fullPreviewHint: "新建或保存章节后,合并稿件会显示在这里。"
     },
     modal: {
       createTitle: "新建论文项目",

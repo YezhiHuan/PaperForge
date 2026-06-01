@@ -1,6 +1,6 @@
 [package]
 name = "paperforge"
-version = "2.2.1"
+version = "2.2.2"
 description = "PaperForge local-first manuscript workspace"
 authors = ["PaperForge"]
 license = ""

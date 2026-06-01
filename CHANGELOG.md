@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.2.2
+
+### Fixed
+- `llm_body_debug_log` no longer panics on UTF-8. The masking walker used `s.replace_range(8..s.len() - 4, "****")`, which crashed with `end of range should be a character boundary` whenever the LLM payload contained Chinese, emoji, or accented Latin text. Two char-counted helpers, `safe_take_chars` and `safe_redact_middle_chars`, now drive both the masker and any future char-bounded previews. New tests cover long Chinese and emoji payloads.
+
+### Changed
+- Right panel: the `Cites`, `Claims`, and `Library` tabs are gone. The `ToolTab` type is now `info | agent | references | export`. The top bar keeps only the **References** entry. The `CitationTool`, `LiteratureTool`, and `ClaimTool` React components stay in the source so the underlying references / literature / evidence data paths can be re-wired later without a major refactor.
+- The combined draft preview moved out of the export side panel. The Writing page toolbar now has a third tab (`Full Preview`) that runs alongside the existing `Edit` and `File Preview` tabs and renders the same `mergeSections` output that the exporter used to preview.
+- The export tool no longer carries a `<details>` block that duplicated the full preview. Export keeps the status pill, cleaned-up path, copy-path, open-folder, and per-warning cards.
+
+### Added
+- i18n: `writing.fullPreview`, `writing.fullPreviewEmpty`, and `writing.fullPreviewHint` for English and Chinese. An empty manuscript renders the empty-state card inside the Full Preview tab.
+- Three new Rust tests guard the UTF-8 helpers and the masking walker.
+
+
 ## v2.2.0
 
 ### Added

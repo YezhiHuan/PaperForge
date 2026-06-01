@@ -111,9 +111,56 @@ fn llm_body_forbidden_keys(body: &serde_json::Value) -> Vec<String> {
     hits
 }
 
+/// UTF-8 safe preview: takes the first `max_chars` Unicode scalar values
+/// from `input` and appends an ellipsis when the input was longer.
+/// Counting in chars (not bytes) keeps multi-byte characters such as
+/// Chinese, emoji, or accented Latin letters intact; a byte-based
+/// slice on the same string would panic with
+/// `end of range should be a character boundary`.
+fn safe_take_chars(input: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut truncated = false;
+    for (idx, ch) in input.chars().enumerate() {
+        if idx >= max_chars {
+            truncated = true;
+            break;
+        }
+        out.push(ch);
+    }
+    if truncated {
+        out.push_str("...");
+    }
+    out
+}
+
+/// UTF-8 safe redaction: keep the first `prefix` and last `suffix`
+/// Unicode scalar values of `input` and replace the middle with
+/// `mask`. Returns the input unchanged when it is too short to redact
+/// safely. Counting in chars avoids splitting a multi-byte UTF-8 code
+/// point, which would otherwise panic with
+/// `end of range should be a character boundary`.
+fn safe_redact_middle_chars(input: &str, prefix: usize, suffix: usize, mask: &str) -> String {
+    let total = input.chars().count();
+    if total <= prefix + suffix {
+        return input.to_string();
+    }
+    let head: String = input.chars().take(prefix).collect();
+    let tail: String = input.chars().skip(total - suffix).collect();
+    let mut out = String::with_capacity(head.len() + mask.len() + tail.len());
+    out.push_str(&head);
+    out.push_str(mask);
+    out.push_str(&tail);
+    out
+}
+
 /// Returns a JSON snapshot of the body for debug logging. The API key
 /// is masked because it is stored in the same auth header the request
-/// will use and must never reach the application log.
+/// will use and must never reach the application log. Masking walks
+/// every string value and replaces the middle with `****` using the
+/// UTF-8 safe helper above so non-ASCII payloads do not panic.
 fn llm_body_debug_log(body: &serde_json::Value) -> String {
     let mut sanitized = body.clone();
     fn walk(value: &mut serde_json::Value) {
@@ -129,8 +176,9 @@ fn llm_body_debug_log(body: &serde_json::Value) -> String {
                 }
             }
             serde_json::Value::String(s) => {
-                if s.len() > 32 {
-                    s.replace_range(8..s.len() - 4, "****");
+                if s.chars().count() > 12 {
+                    let redacted = safe_redact_middle_chars(s, 8, 4, "****");
+                    *s = redacted;
                 }
             }
             _ => {}
@@ -5345,5 +5393,50 @@ mod tests {
         let logged = llm_body_debug_log(&body);
         assert!(!logged.contains("1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZabcd"));
         assert!(logged.contains("****"));
+    }
+
+    #[test]
+    fn llm_body_debug_log_masks_utf8_payload_without_panic() {
+        // Long Chinese and emoji strings used to panic inside the
+        // masking walker because the previous implementation sliced
+        // on byte offsets which lands inside a multi-byte UTF-8 code
+        // point. The walker now uses a char-based redaction helper.
+        let body = serde_json::json!({
+            "model": "x",
+            "messages": [
+                { "role": "system", "content": "中文测试 PaperForge 写作 Agent 与文献同步 😀😀😀😀😀" },
+                { "role": "user", "content": "你好 PaperForge，请帮我做一次脱敏测试。" }
+            ]
+        });
+        let logged = llm_body_debug_log(&body);
+        // The walker must not panic on multi-byte UTF-8 strings.
+        assert!(logged.contains("****"));
+        // The first 8 chars of the system content are preserved.
+        assert!(logged.contains("中文测试 Pa"));
+        // The original long run of CJK + emoji must not appear in the log.
+        assert!(!logged.contains("PaperForge 写作 Agent 与文献同步"));
+    }
+
+    #[test]
+    fn safe_take_chars_handles_utf8_and_zero_limit() {
+        assert_eq!(safe_take_chars("", 0), "");
+        assert_eq!(safe_take_chars("中文", 0), "");
+        assert_eq!(safe_take_chars("中文", 1), "中...");
+        let preview = safe_take_chars("中文测试 表情", 4);
+        // 4 chars: 中, 文, 测, 试. The 5th char (space) triggers
+        // truncation, so we expect "..." appended.
+        assert_eq!(preview, "中文测试...");
+    }
+
+    #[test]
+    fn safe_redact_middle_chars_handles_utf8_boundaries() {
+        let input = "中文测试 PaperForge";
+        let redacted = safe_redact_middle_chars(input, 4, 4, "****");
+        // 4 head chars + mask + 4 tail chars. "中文测试 PaperForge"
+        // has 15 chars; last 4 = "orge".
+        assert_eq!(redacted, "中文测试****orge");
+        // Short inputs (head + tail overlap the string length) are
+        // returned unchanged.
+        assert_eq!(safe_redact_middle_chars("你好", 4, 4, "****"), "你好");
     }
 }
