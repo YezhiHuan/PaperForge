@@ -44,6 +44,7 @@ import type {
   ExportValidationWarning,
   ExportJob,
   Language,
+  LlmProviderKind,
   LiteratureItem,
   ManuscriptMode,
   ManuscriptSection,
@@ -384,7 +385,7 @@ function App() {
       const results = await api.searchLiteratureMock(activeProject.id, litQuery);
       setLiterature(results);
       setLitSearching(false);
-      addLog("info", `MOCK literature search returned ${results.length} item(s).`);
+      addLog("info", `Local literature search returned ${results.length} item(s).`);
     }, 420);
   }
 
@@ -392,10 +393,17 @@ function App() {
     if (!activeProject || !activeSection) return;
     setAiLoading(true);
     window.setTimeout(async () => {
-      const generated = await api.generateAiProposal(activeProject.id, activeSection.id, instruction, "", settings);
-      setProposal(generated);
-      setAiLoading(false);
-      addLog("info", "AI proposal generated as mock/provider abstraction.");
+      try {
+        const generated = await api.generateAiProposal(activeProject.id, activeSection.id, instruction, "", settings);
+        setProposal(generated);
+        addLog("info", "AI proposal generated.");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "AI proposal failed.";
+        addLog("error", message);
+        window.alert(message);
+      } finally {
+        setAiLoading(false);
+      }
     }, 520);
   }
 
@@ -462,10 +470,17 @@ function App() {
     setExportRunning(true);
     setExportJob({ id: "running", projectId: activeProject.id, mode, status: "running", outputPath: "", logs: ["Export running"], createdAt: nowIso() });
     window.setTimeout(async () => {
-      const job = await api.exportProject(activeProject.id, mode, sections);
-      setExportJob(job);
-      setExportRunning(false);
-      addLog(job.status === "success" ? "success" : "info", `${mode} export ${job.status}: ${job.outputPath || job.logs[0]}`);
+      try {
+        const job = await api.exportProject(activeProject.id, mode, sections);
+        setExportJob(job);
+        addLog(job.status === "success" ? "success" : job.status === "failed" ? "error" : "info", `${mode} export ${job.status}: ${job.outputPath || job.logs[0]}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : `${mode} export failed.`;
+        setExportJob({ id: "failed", projectId: activeProject.id, mode, status: "failed", outputPath: "", logs: [message], createdAt: nowIso() });
+        addLog("error", message);
+      } finally {
+        setExportRunning(false);
+      }
     }, 620);
   }
 
@@ -483,6 +498,12 @@ function App() {
     if (!exportJob?.outputPath) return;
     const opened = await api.openOutputFolder(outputFolderFromPath(exportJob.outputPath));
     addLog(opened ? "info" : "warning", opened ? "Opened output folder." : "Output folder open unavailable in browser mode.");
+  }
+
+  async function openProjectFolder() {
+    if (!activeProject) return;
+    const opened = await api.openOutputFolder(activeProject.rootPath);
+    addLog(opened ? "info" : "warning", opened ? "Opened project folder." : "Project folder open unavailable in browser mode.");
   }
 
   async function applySettings(nextSettings: AppSettings) {
@@ -652,6 +673,7 @@ function App() {
             exportProjectFolder={runProjectFolderExport}
             exportManifest={() => exportProjectManifest(activeProject)}
             openOutputFolder={openOutputFolder}
+            openProjectFolder={openProjectFolder}
             settings={draftSettings}
             setSettings={applySettings}
             updateProjectMetadata={(partial) => updateProjectMetadata(activeProject, partial)}
@@ -928,6 +950,7 @@ function RightPanel(props: {
   exportManifest: () => void;
   exportProjectFolder: () => void;
   openOutputFolder: () => void;
+  openProjectFolder: () => void;
   settings: AppSettings;
   setSettings: (settings: AppSettings) => void;
   updateProjectMetadata: (partial: Partial<Pick<ProjectConfig, "title" | "author" | "authors" | "targetJournal" | "manuscriptMode" | "citationStyle" | "exportMode">>) => void;
@@ -975,6 +998,9 @@ function ProjectInfoTool(props: Parameters<typeof RightPanel>[0]) {
   return (
     <>
       <h2>{props.t("project.projectInfo")}</h2>
+      <button className="secondary-btn wide" onClick={props.openProjectFolder}>
+        <ExternalLink size={14} /> {props.t("actions.openProjectFolder")}
+      </button>
       <div className="stack">
         <label>
           {props.t("modal.paperTitle")}
@@ -1135,7 +1161,7 @@ function AiTool(props: Parameters<typeof RightPanel>[0]) {
       <AnimatePresence>
         {props.proposal && (
           <motion.div className="proposal-card" initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }}>
-            <span className="mode-chip">mock/provider</span>
+            <span className="mode-chip">LLM</span>
             <p>{props.proposal.proposedText}</p>
             <div className="row-actions">
               <button onClick={props.applyProposal}>Apply</button>
@@ -1206,7 +1232,7 @@ function LiteratureTool(props: Parameters<typeof RightPanel>[0]) {
         <button className="primary-btn wide">Add PDF record</button>
       </form>
       <div className="search-row">
-        <input placeholder="mock search" value={props.litQuery} onChange={(event) => props.setLitQuery(event.target.value)} />
+        <input placeholder="Search literature notes" value={props.litQuery} onChange={(event) => props.setLitQuery(event.target.value)} />
         <button onClick={props.runLiteratureSearch}>{props.litSearching ? <Loader2 className="spin" size={15} /> : <Search size={15} />}</button>
       </div>
       <div className="card-list">
@@ -1248,8 +1274,8 @@ function ExportTool(props: Parameters<typeof RightPanel>[0]) {
       <div className="quick-grid">
         <button className="export-primary" onClick={() => props.runExport("markdown")}>{props.t("export.markdownPackage")}</button>
         <button onClick={props.exportProjectFolder}>{props.t("export.projectFolder")}</button>
-        <button onClick={() => props.runExport("word")} title={props.t("export.wordSoon")} disabled>{props.t("export.wordDraft")}</button>
-        <button onClick={() => props.runExport("latex")} title={props.t("export.latexSoon")} disabled>{props.t("export.latexProject")}</button>
+        <button onClick={() => props.runExport("word")}>{props.t("export.wordDraft")}</button>
+        <button onClick={() => props.runExport("latex")}>{props.t("export.latexProject")}</button>
         <button onClick={props.exportManifest}>{props.t("export.manifestJson")}</button>
       </div>
       {props.exportRunning && <div className="running-dots">{props.t("export.running")}<span>.</span><span>.</span><span>.</span></div>}
@@ -1285,6 +1311,20 @@ function ExportTool(props: Parameters<typeof RightPanel>[0]) {
 
 function SettingsTool(props: Parameters<typeof RightPanel>[0]) {
   const themeOptions: Array<[ThemeMode, string]> = [["light", "Light"], ["dark", "Dark"], ["system", "System"], ["eyeCare", "Eye-care"]];
+  function updateLlmProvider(provider: LlmProviderKind) {
+    const previous = props.settings.llmProvider;
+    const baseUrl = provider === "anthropic" ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1";
+    const model = provider === "anthropic" ? "claude-3-5-sonnet-latest" : "gpt-4.1-mini";
+    props.setSettings({
+      ...props.settings,
+      llmProvider: {
+        ...previous,
+        provider,
+        baseUrl: previous.baseUrl.trim() === "" || previous.baseUrl.includes("api.openai.com") || previous.baseUrl.includes("api.anthropic.com") ? baseUrl : previous.baseUrl,
+        model: previous.model.trim() === "" || previous.model === "gpt-4.1-mini" || previous.model.startsWith("claude-") ? model : previous.model
+      }
+    });
+  }
   return (
     <>
       <h2>{props.t("tools.settings")}</h2>
@@ -1315,9 +1355,21 @@ function SettingsTool(props: Parameters<typeof RightPanel>[0]) {
             {themeOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}
           </select>
         </label>
+        <label>{props.t("settings.provider")}
+          <select
+            value={props.settings.llmProvider.provider}
+            onChange={(event) => updateLlmProvider(event.target.value as LlmProviderKind)}
+          >
+            <option value="openai-compatible">OpenAI-compatible</option>
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic</option>
+          </select>
+        </label>
         <label>{props.t("settings.baseUrl")}<input value={props.settings.llmProvider.baseUrl} onChange={(event) => props.setSettings({ ...props.settings, llmProvider: { ...props.settings.llmProvider, baseUrl: event.target.value } })} /></label>
         <label>{props.t("settings.apiKey")}<input type="password" value={props.settings.llmProvider.apiKey} onChange={(event) => props.setSettings({ ...props.settings, llmProvider: { ...props.settings.llmProvider, apiKey: event.target.value } })} /></label>
         <label>{props.t("settings.model")}<input value={props.settings.llmProvider.model} onChange={(event) => props.setSettings({ ...props.settings, llmProvider: { ...props.settings.llmProvider, model: event.target.value } })} /></label>
+        <label>{props.t("settings.temperature")}<input type="number" min="0" max="2" step="0.1" value={props.settings.llmProvider.temperature} onChange={(event) => props.setSettings({ ...props.settings, llmProvider: { ...props.settings.llmProvider, temperature: Number(event.target.value) } })} /></label>
+        <label>{props.t("settings.maxTokens")}<input type="number" min="1" step="100" value={props.settings.llmProvider.maxTokens} onChange={(event) => props.setSettings({ ...props.settings, llmProvider: { ...props.settings.llmProvider, maxTokens: Number(event.target.value) } })} /></label>
         <label>{props.t("settings.citationStyle")}<input value={props.settings.defaultCitationStyle} onChange={(event) => props.setSettings({ ...props.settings, defaultCitationStyle: event.target.value })} /></label>
       </div>
     </>

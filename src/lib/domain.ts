@@ -230,7 +230,7 @@ export function createProjectConfig(input: ProjectCreateInput, rootPath: string)
   const sections = createInitialSections(input.sectionNames, input.sectionNaming);
   return {
     id: makeId("project"),
-    version: "2.0.0",
+    version: "2.1.0",
     title: input.title.trim() || "Untitled Paper",
     author: input.author.trim(),
     authors: input.author.trim() ? input.author.split(",").map((item) => item.trim()).filter(Boolean) : [],

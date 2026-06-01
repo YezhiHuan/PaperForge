@@ -1,6 +1,6 @@
 # PaperForge
 
-Current version: `2.0.0`
+Current version: `2.1.0`
 
 PaperForge is a local-first AI manuscript writing desktop app. It organizes papers as local folders and connects Markdown sections, references, attachments, exports, and replaceable AI model settings.
 
@@ -29,7 +29,7 @@ npm run build
 npm run tauri build
 ```
 
-Lint is not configured in v2.0.0.
+Lint is not configured in v2.1.0.
 
 ## Workspace Init
 
@@ -57,7 +57,7 @@ workspace/
 
 ```json
 {
-  "version": "2.0.0",
+  "version": "2.1.0",
   "workspaceName": "workspace",
   "createdAt": "...",
   "updatedAt": "...",
@@ -98,6 +98,20 @@ Supported providers: `openai-compatible`, `openai`, `anthropic`.
 
 Do not commit `ai-models.json`; it may contain API keys.
 
+## LLM Settings
+
+v2.1.0 connects the Agent and AI proposal flow to real model providers.
+
+Supported providers:
+
+- OpenAI-compatible: `POST {baseUrl}/chat/completions`
+- OpenAI: `POST https://api.openai.com/v1/chat/completions`
+- Anthropic: `POST {baseUrl}/messages`
+
+Settings include provider, base URL, API key, model, temperature, and max tokens. If the Settings API key is empty, PaperForge tries the default model in `workspace/.paperforge/ai-models.json`.
+
+Desktop LLM requests require `curl` on PATH. API keys stay in local settings or workspace model config and must not be committed.
+
 ## Paper Projects
 
 In the app, click New Paper. Title, authors, and journal are optional.
@@ -136,7 +150,7 @@ workspace/
 
 ## Project Agent
 
-v2.0.0 adds the PaperForge Project Agent MVP. The right panel contains an Agent Panel with Ask, Edit, and Operate modes.
+v2.1.0 connects the PaperForge Project Agent to real LLM providers. The right panel contains an Agent Panel with Ask, Edit, and Operate modes.
 
 Built-in Skills:
 
@@ -183,18 +197,35 @@ PaperForge does not generate Zotero Word fields. Use Zotero Word plugin for fina
 
 ## Export
 
-v2.0.0 supports:
+v2.1.0 supports:
 
 - Export JSON: writes current paper config to `exports/json/paperforge.json`
 - Export Markdown: writes a package under `exports/markdown/` with `paper.md`, sections, references, attachments, claims, and `export-report.json`
 - Export Project Folder: writes a project folder snapshot under `exports/project-folder/`
-- Project Agent MVP with safe Ask / Edit / Operate workflows and built-in Skills
+- Export Word Draft: uses Pandoc to write `exports/word/paper.docx` and keeps `[CITE: key]` placeholders
+- Export LaTeX Project: uses Pandoc to write `exports/latex/paper.tex` and copies `references/bib/references.bib` when available
+- Project Agent with safe Ask / Edit / Operate workflows and built-in Skills
 
-Word and LaTeX buttons are placeholders marked Coming soon.
+Word and LaTeX export require Pandoc. On Windows, if `pandoc --version` fails, PaperForge tries:
+
+```powershell
+winget install --id JohnMacFarlane.Pandoc -e --source winget --accept-package-agreements --accept-source-agreements --silent
+```
+
+If automatic install fails, run that command manually or install Pandoc from https://pandoc.org/installing.html, then retry export.
+
+If PowerShell can find Pandoc but PaperForge cannot, set an explicit executable path before starting PaperForge:
+
+```powershell
+$env:PAPERFORGE_PANDOC = "C:\Program Files\Pandoc\pandoc.exe"
+npm run tauri:dev
+```
+
+PaperForge also checks common Windows install locations such as `C:\Program Files\Pandoc\pandoc.exe`, `%LOCALAPPDATA%\Pandoc\pandoc.exe`, `%LOCALAPPDATA%\Programs\Pandoc\pandoc.exe`, winget package folders, and Scoop shims.
 
 ## UI And Theme
 
-The app title displays `PaperForge v2.0.0`.
+The app title displays `PaperForge v2.1.0`.
 
 Default theme is light. Settings can switch light, dark, or eye-care theme. Production Windows desktop builds do not show an extra terminal window.
 
@@ -218,12 +249,11 @@ workspace/.paperforge/ai-models.json
 
 The repository ignores generated workspaces and local secrets.
 
-## v2.0.0 Limits
+## v2.1.0 Limits
 
 - Direct global `paperforge` command may require `npm link` or package installation; npm scripts work from the clone.
 - File picker is not implemented; workspace/project paths can be typed.
-- Agent and AI calls remain mock/provider-abstraction; model config is persisted but providers are not fully wired.
 - Custom Skill loading, RAG, online literature search, and Skill marketplace are not implemented.
-- Word export and LaTeX export are Coming soon.
+- Word and LaTeX export depend on Pandoc availability.
 - PDF parsing, vector search, Zotero local API, and secure OS secret storage are not implemented.
 - Project folder export is a snapshot, not a Git operation.

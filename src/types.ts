@@ -8,6 +8,7 @@ export type ExportStatus = "pending" | "running" | "success" | "failed";
 export type AppLogLevel = "info" | "warning" | "error" | "success";
 export type ThemeMode = "light" | "dark" | "system" | "eyeCare";
 export type Language = "en" | "zh";
+export type LlmProviderKind = "openai-compatible" | "openai" | "anthropic";
 export type ExportWarningSeverity = "info" | "warning" | "error";
 export type SectionNamingMode = "numbered" | "slugOnly";
 export type SectionTemplateId = "empty" | "standard" | "engineeringSimulation" | "review";
@@ -244,9 +245,12 @@ export interface ProjectActivity {
 }
 
 export interface LlmProviderSettings {
+  provider: LlmProviderKind;
   baseUrl: string;
   apiKey: string;
   model: string;
+  temperature: number;
+  maxTokens: number;
 }
 
 export interface AppSettings {

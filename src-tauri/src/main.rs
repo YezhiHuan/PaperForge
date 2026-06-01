@@ -6,8 +6,14 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 use uuid::Uuid;
+
+const APP_VERSION: &str = "2.1.0";
+const PANDOC_INSTALL_COMMAND: &str = "winget install --id JohnMacFarlane.Pandoc -e --source winget --accept-package-agreements --accept-source-agreements --silent";
+const PANDOC_REQUIRED_MESSAGE: &str =
+    "Pandoc is required for document conversion. Please install Pandoc and try again.";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -99,7 +105,7 @@ fn default_project_title() -> String {
 }
 
 fn default_project_version() -> String {
-    "2.0.0".to_string()
+    APP_VERSION.to_string()
 }
 
 fn default_target_journal() -> String {
@@ -491,12 +497,49 @@ fn default_theme_mode() -> ThemeMode {
     ThemeMode::Light
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+enum LlmProviderKind {
+    OpenaiCompatible,
+    Openai,
+    Anthropic,
+}
+
+fn default_llm_provider_kind() -> LlmProviderKind {
+    LlmProviderKind::OpenaiCompatible
+}
+
+fn default_llm_base_url() -> String {
+    "https://api.openai.com/v1".to_string()
+}
+
+fn default_llm_model() -> String {
+    "gpt-4.1-mini".to_string()
+}
+
+fn default_llm_temperature() -> f32 {
+    0.3
+}
+
+fn default_llm_max_tokens() -> u32 {
+    2000
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LlmProviderSettings {
+    #[serde(default = "default_llm_provider_kind")]
+    provider: LlmProviderKind,
+    #[serde(default = "default_llm_base_url")]
     base_url: String,
+    #[serde(default)]
     api_key: String,
+    #[serde(default = "default_llm_model")]
     model: String,
+    #[serde(default = "default_llm_temperature")]
+    temperature: f32,
+    #[serde(default = "default_llm_max_tokens")]
+    max_tokens: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -531,6 +574,14 @@ struct AiModelConfig {
     models: Vec<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PandocStatus {
+    installed: bool,
+    version: Option<String>,
+    error: Option<String>,
+}
+
 fn now_iso() -> String {
     Utc::now().to_rfc3339()
 }
@@ -555,6 +606,229 @@ fn settings_path() -> Result<PathBuf, String> {
 
 fn app_logs_path() -> Result<PathBuf, String> {
     Ok(local_dir()?.join("app_logs.json"))
+}
+
+fn normalize_llm_settings(mut settings: LlmProviderSettings) -> LlmProviderSettings {
+    if settings.base_url.trim().is_empty() {
+        settings.base_url = match settings.provider {
+            LlmProviderKind::Anthropic => "https://api.anthropic.com/v1".to_string(),
+            _ => "https://api.openai.com/v1".to_string(),
+        };
+    }
+    if settings.model.trim().is_empty() {
+        settings.model = match settings.provider {
+            LlmProviderKind::Anthropic => "claude-3-5-sonnet-latest".to_string(),
+            _ => default_llm_model(),
+        };
+    }
+    if settings.max_tokens == 0 {
+        settings.max_tokens = default_llm_max_tokens();
+    }
+    settings
+}
+
+fn ai_model_value_to_settings(value: &serde_json::Value) -> Option<LlmProviderSettings> {
+    let provider = match value.get("provider")?.as_str()? {
+        "anthropic" => LlmProviderKind::Anthropic,
+        "openai" => LlmProviderKind::Openai,
+        _ => LlmProviderKind::OpenaiCompatible,
+    };
+    Some(normalize_llm_settings(LlmProviderSettings {
+        provider,
+        base_url: value
+            .get("baseUrl")
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_string(),
+        api_key: value
+            .get("apiKey")
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_string(),
+        model: value
+            .get("model")
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_string(),
+        temperature: value
+            .get("temperature")
+            .and_then(|item| item.as_f64())
+            .map(|item| item as f32)
+            .unwrap_or_else(default_llm_temperature),
+        max_tokens: value
+            .get("maxTokens")
+            .and_then(|item| item.as_u64())
+            .map(|item| item as u32)
+            .unwrap_or_else(default_llm_max_tokens),
+    }))
+}
+
+fn workspace_default_llm_settings(workspace_root: &str) -> Result<Option<LlmProviderSettings>, String> {
+    let path = workspace_ai_models_path(&PathBuf::from(workspace_root));
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(path).map_err(|err| err.to_string())?;
+    let config: AiModelConfig = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
+    let selected = config
+        .models
+        .iter()
+        .find(|item| item.get("id").and_then(|id| id.as_str()) == Some(config.default_model_id.as_str()))
+        .or_else(|| config.models.first());
+    Ok(selected.and_then(ai_model_value_to_settings))
+}
+
+fn resolve_llm_settings(settings: &AppSettings) -> Result<LlmProviderSettings, String> {
+    let direct = normalize_llm_settings(settings.llm_provider.clone());
+    if !direct.api_key.trim().is_empty() {
+        return Ok(direct);
+    }
+    if let Some(workspace) = workspace_default_llm_settings(&settings.workspace_root)? {
+        if !workspace.api_key.trim().is_empty() {
+            return Ok(workspace);
+        }
+    }
+    Err("No LLM API key configured. Add a model in Settings or workspace/.paperforge/ai-models.json.".to_string())
+}
+
+fn join_url(base_url: &str, endpoint: &str) -> String {
+    format!(
+        "{}/{}",
+        base_url.trim_end_matches('/'),
+        endpoint.trim_start_matches('/')
+    )
+}
+
+fn parse_openai_chat_content(value: &serde_json::Value) -> Result<String, String> {
+    value
+        .get("choices")
+        .and_then(|choices| choices.as_array())
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(|content| content.as_str())
+        .map(|content| content.trim().to_string())
+        .filter(|content| !content.is_empty())
+        .ok_or_else(|| "OpenAI-compatible response did not include choices[0].message.content.".to_string())
+}
+
+fn parse_anthropic_message_content(value: &serde_json::Value) -> Result<String, String> {
+    value
+        .get("content")
+        .and_then(|content| content.as_array())
+        .and_then(|content| {
+            content.iter().find_map(|item| {
+                if item.get("type").and_then(|kind| kind.as_str()) == Some("text") {
+                    item.get("text").and_then(|text| text.as_str())
+                } else {
+                    None
+                }
+            })
+        })
+        .map(|content| content.trim().to_string())
+        .filter(|content| !content.is_empty())
+        .ok_or_else(|| "Anthropic response did not include text content.".to_string())
+}
+
+fn curl_config_quote(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn write_llm_request_files(url: &str, headers: &[String], body: &serde_json::Value) -> Result<(PathBuf, PathBuf), String> {
+    let dir = local_dir()?.join("llm-requests");
+    fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    let id = Uuid::new_v4().to_string();
+    let body_path = dir.join(format!("{}.json", id));
+    let config_path = dir.join(format!("{}.curl", id));
+    fs::write(
+        &body_path,
+        serde_json::to_string(body).map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())?;
+    let mut config = vec![
+        format!("url = \"{}\"", curl_config_quote(url)),
+        "request = \"POST\"".to_string(),
+        "silent".to_string(),
+        "show-error".to_string(),
+        "write-out = \"\\n%{http_code}\"".to_string(),
+        format!("data = \"@{}\"", curl_config_quote(&body_path.to_string_lossy())),
+    ];
+    for header in headers {
+        config.push(format!("header = \"{}\"", curl_config_quote(header)));
+    }
+    fs::write(&config_path, config.join("\n")).map_err(|err| err.to_string())?;
+    Ok((config_path, body_path))
+}
+
+fn post_json_with_curl(url: &str, headers: &[String], body: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let (config_path, body_path) = write_llm_request_files(url, headers, body)?;
+    let output = Command::new("curl")
+        .arg("--config")
+        .arg(&config_path)
+        .output()
+        .map_err(|err| format!("curl request failed to start: {}", err));
+    let _ = fs::remove_file(&config_path);
+    let _ = fs::remove_file(&body_path);
+    let output = output?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let mut lines = stdout.lines().collect::<Vec<_>>();
+    let status = lines.pop().unwrap_or("").trim().to_string();
+    let body_text = lines.join("\n");
+    if !output.status.success() {
+        return Err(if stderr.is_empty() {
+            format!("curl request failed with HTTP {}: {}", status, body_text)
+        } else {
+            format!("curl request failed: {} {}", stderr, body_text)
+        });
+    }
+    if !status.starts_with('2') {
+        return Err(format!("LLM API error {}: {}", status, body_text));
+    }
+    serde_json::from_str(&body_text).map_err(|err| format!("LLM response JSON parse failed: {}", err))
+}
+
+fn call_llm(settings: &AppSettings, system_prompt: &str, user_prompt: &str) -> Result<String, String> {
+    let provider = resolve_llm_settings(settings)?;
+    match provider.provider {
+        LlmProviderKind::Anthropic => {
+            let value = post_json_with_curl(
+                &join_url(&provider.base_url, "messages"),
+                &[
+                    "Content-Type: application/json".to_string(),
+                    format!("x-api-key: {}", provider.api_key.trim()),
+                    "anthropic-version: 2023-06-01".to_string(),
+                ],
+                &serde_json::json!({
+                    "model": provider.model,
+                    "max_tokens": provider.max_tokens,
+                    "temperature": provider.temperature,
+                    "system": system_prompt,
+                    "messages": [{ "role": "user", "content": user_prompt }],
+                }),
+            )?;
+            parse_anthropic_message_content(&value)
+        }
+        LlmProviderKind::Openai | LlmProviderKind::OpenaiCompatible => {
+            let value = post_json_with_curl(
+                &join_url(&provider.base_url, "chat/completions"),
+                &[
+                    "Content-Type: application/json".to_string(),
+                    format!("Authorization: Bearer {}", provider.api_key.trim()),
+                ],
+                &serde_json::json!({
+                    "model": provider.model,
+                    "temperature": provider.temperature,
+                    "max_tokens": provider.max_tokens,
+                    "messages": [
+                        { "role": "system", "content": system_prompt },
+                        { "role": "user", "content": user_prompt }
+                    ],
+                }),
+            )?;
+            parse_openai_chat_content(&value)
+        }
+    }
 }
 
 fn built_in_agent_skills() -> Vec<AgentSkill> {
@@ -681,9 +955,12 @@ fn default_settings() -> AppSettings {
         workspace_root: "workspace".to_string(),
         default_manuscript_mode: ManuscriptMode::Word,
         llm_provider: LlmProviderSettings {
+            provider: LlmProviderKind::OpenaiCompatible,
             base_url: "https://api.openai.com/v1".to_string(),
             api_key: String::new(),
             model: "gpt-4.1-mini".to_string(),
+            temperature: default_llm_temperature(),
+            max_tokens: default_llm_max_tokens(),
         },
         default_citation_style: "apa".to_string(),
         default_export_mode: ManuscriptMode::Markdown,
@@ -695,7 +972,7 @@ fn default_settings() -> AppSettings {
 fn default_workspace_config(existing: Option<WorkspaceConfig>) -> WorkspaceConfig {
     let timestamp = now_iso();
     WorkspaceConfig {
-        version: "2.0.0".to_string(),
+        version: APP_VERSION.to_string(),
         workspace_name: existing
             .as_ref()
             .map(|value| value.workspace_name.clone())
@@ -1468,12 +1745,13 @@ fn run_agent(
     let mut files_read = vec![];
     let mut files_to_change = vec![];
     let mut changes = vec![];
-    let mut report = String::new();
+    let report: String;
     let mut tool_results = skill
         .allowed_tools
         .iter()
         .map(|tool| agent_tool_result(tool, true, "Tool registered."))
         .collect::<Vec<_>>();
+    let settings = read_settings()?;
 
     match &mode {
         AgentMode::Ask => {
@@ -1482,15 +1760,26 @@ fn run_agent(
             let broken = check_broken_links(&project, &sections)?;
             files_read.push("paperforge.json".to_string());
             files_read.extend(sections.iter().map(|section| section.path.clone()));
-            report = format!(
-                "{} completed.\nProject: {}\nFiles: {}\nSections: {}\nFigures: {}\nBroken links: {}\nNo files modified.",
-                skill.name.clone(),
-                project.title,
-                files.len(),
-                sections.len(),
-                figures.len(),
-                if broken.is_empty() { "none".to_string() } else { broken.join(", ") }
-            );
+            let draft = sections
+                .iter()
+                .map(|section| format!("## {}\n{}", section.title, section.content))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            report = call_llm(
+                &settings,
+                "You are PaperForge Project Agent. Return a concise manuscript project report. Do not claim files were modified.",
+                &format!(
+                    "Skill: {}\nUser request: {}\nProject: {}\nFiles: {}\nSections: {}\nFigures: {}\nBroken links: {}\nManuscript draft:\n{}",
+                    skill.name,
+                    request,
+                    project.title,
+                    files.len(),
+                    sections.len(),
+                    figures.len(),
+                    if broken.is_empty() { "none".to_string() } else { broken.join(", ") },
+                    draft
+                ),
+            )?;
             tool_results.push(AgentToolResult {
                 tool: "check_broken_links".to_string(),
                 ok: broken.is_empty(),
@@ -1504,16 +1793,19 @@ fn run_agent(
             if let Some(section) = selected_section {
                 files_read.push(section.path.clone());
                 let original = pfs.read_project_file(&section.path)?;
-                let prefix = if skill.id == "edit.translate-zh-en" {
-                    "Translation/polish draft"
+                let task = if skill.id == "edit.translate-zh-en" {
+                    "Translate or bilingual-polish this section while preserving citations, numbers, equations, and technical meaning."
                 } else {
-                    "Academic polish draft"
+                    "Improve academic style while preserving citations, numbers, equations, and technical meaning."
                 };
-                let proposed = format!(
-                    "{}\n\n> {}: provider abstraction ready. Review wording, preserve citations, and apply only if acceptable.\n",
-                    original.trim_end(),
-                    prefix
-                );
+                let proposed = call_llm(
+                    &settings,
+                    "You are PaperForge editing agent. Return only the revised Markdown section. Preserve citation markers exactly.",
+                    &format!(
+                        "Task: {}\nUser request: {}\nSection title: {}\nOriginal Markdown:\n{}",
+                        task, request, section.title, original
+                    ),
+                )?;
                 files_to_change.push(section.path.clone());
                 changes.push(agent_change(&section.path, original, proposed));
                 report = format!("{} prepared a diff for {}. Review before applying.", skill.name.clone(), section.title);
@@ -1646,11 +1938,14 @@ fn read_settings() -> Result<AppSettings, String> {
         return Ok(settings);
     }
     let raw = fs::read_to_string(path).map_err(|err| err.to_string())?;
-    serde_json::from_str(&raw).map_err(|err| err.to_string())
+    let mut settings: AppSettings = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
+    settings.llm_provider = normalize_llm_settings(settings.llm_provider);
+    Ok(settings)
 }
 
 #[tauri::command]
-fn save_settings(settings: AppSettings) -> Result<AppSettings, String> {
+fn save_settings(mut settings: AppSettings) -> Result<AppSettings, String> {
+    settings.llm_provider = normalize_llm_settings(settings.llm_provider);
     write_json(&settings_path()?, &settings)?;
     Ok(settings)
 }
@@ -1932,20 +2227,30 @@ fn export_project_manifest(project_id: String) -> Result<String, String> {
 #[tauri::command]
 fn list_sections(project_id: String) -> Result<Vec<ManuscriptSection>, String> {
     let mut project = project_by_id(&project_id)?;
-    if project.manuscript.sections.is_empty() {
-        let scanned = scan_existing_section_files(&project)?;
-        if !scanned.is_empty() {
-            project.manuscript.sections = scanned.iter().map(manifest_from_section).collect();
-            update_project_config(project.clone())?;
-            return Ok(scanned);
-        }
-    }
-    project
+    let mut sections = project
         .manuscript
         .sections
         .iter()
         .map(|section| section_from_manifest(&project, section))
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    let scanned = scan_existing_section_files(&project)?;
+    let mut changed = false;
+    for section in scanned {
+        if !sections.iter().any(|item| item.path == section.path || item.filename == section.filename) {
+            sections.push(section);
+            changed = true;
+        }
+    }
+    if changed {
+        sections.sort_by_key(|section| section.path.clone());
+        for (index, section) in sections.iter_mut().enumerate() {
+            section.order = (index + 1) as u32;
+        }
+        project.manuscript.sections = sections.iter().map(manifest_from_section).collect();
+        update_project_config(project)?;
+    }
+    sections.sort_by_key(|section| section.order);
+    Ok(sections)
 }
 
 #[tauri::command]
@@ -2335,22 +2640,26 @@ fn generate_ai_proposal(
     selected_text: String,
     settings: AppSettings,
 ) -> Result<AiProposal, String> {
-    let prefix = if settings.llm_provider.api_key.trim().is_empty() {
-        "MOCK: no API key configured."
-    } else {
-        "Provider abstraction ready; mock proposal:"
-    };
+    let proposed_text = call_llm(
+        &settings,
+        "You are PaperForge AI assistant. Return only revised Markdown text. Preserve citation markers, numbers, equations, and technical meaning.",
+        &format!(
+            "Instruction: {}\nSelected text:\n{}",
+            instruction,
+            if selected_text.trim().is_empty() {
+                "Draft a focused manuscript improvement proposal."
+            } else {
+                selected_text.as_str()
+            }
+        ),
+    )?;
     Ok(AiProposal {
         id: format!("proposal_{}", Uuid::new_v4()),
         section_id,
         instruction,
         original_text: selected_text.clone(),
-        proposed_text: format!(
-            "{}\n\n{} can be revised with clearer contribution, cautious claims, and citation hooks such as [CITE: Zhang2023].",
-            prefix,
-            if selected_text.trim().is_empty() { "This paragraph" } else { selected_text.as_str() }
-        ),
-        citation_keys: vec!["Zhang2023".to_string()],
+        proposed_text,
+        citation_keys: vec![],
         created_at: now_iso(),
         status: ProposalStatus::Pending,
     })
@@ -2420,6 +2729,221 @@ fn convert_citations_for_mode(markdown: &str, mode: &ManuscriptMode) -> Result<S
         }
     };
     Ok(converted)
+}
+
+fn first_line(value: &str) -> String {
+    value.lines().next().unwrap_or(value).trim().to_string()
+}
+
+fn windows_pandoc_candidates() -> Vec<PathBuf> {
+    let mut candidates = vec![];
+    for key in ["PAPERFORGE_PANDOC", "PANDOC"] {
+        if let Ok(value) = std::env::var(key) {
+            if !value.trim().is_empty() {
+                candidates.push(PathBuf::from(value.trim()));
+            }
+        }
+    }
+    for key in ["LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "USERPROFILE"] {
+        if let Ok(value) = std::env::var(key) {
+            let base = PathBuf::from(value);
+            match key {
+                "LOCALAPPDATA" => {
+                    candidates.push(base.join("Pandoc/pandoc.exe"));
+                    candidates.push(base.join("Programs/Pandoc/pandoc.exe"));
+                    let winget = base.join("Microsoft/WinGet/Packages");
+                    if let Ok(entries) = fs::read_dir(winget) {
+                        for entry in entries.flatten() {
+                            let name = entry.file_name().to_string_lossy().to_string();
+                            if name.starts_with("JohnMacFarlane.Pandoc") {
+                                candidates.push(entry.path().join("pandoc.exe"));
+                            }
+                        }
+                    }
+                }
+                "PROGRAMFILES" | "PROGRAMFILES(X86)" => candidates.push(base.join("Pandoc/pandoc.exe")),
+                "USERPROFILE" => candidates.push(base.join("scoop/shims/pandoc.exe")),
+                _ => {}
+            }
+        }
+    }
+    candidates
+}
+
+fn find_pandoc_executable() -> PathBuf {
+    windows_pandoc_candidates()
+        .into_iter()
+        .find(|path| path.exists())
+        .unwrap_or_else(|| PathBuf::from("pandoc"))
+}
+
+fn pandoc_version_from_command() -> Result<String, String> {
+    let pandoc = find_pandoc_executable();
+    let output = Command::new(&pandoc)
+        .arg("--version")
+        .output()
+        .map_err(|err| format!("{} ({})", err, pandoc.to_string_lossy()))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+#[tauri::command]
+fn get_pandoc_version() -> Result<String, String> {
+    pandoc_version_from_command()
+}
+
+#[tauri::command]
+fn check_pandoc_installed() -> PandocStatus {
+    match pandoc_version_from_command() {
+        Ok(version) => PandocStatus {
+            installed: true,
+            version: Some(first_line(&version)),
+            error: None,
+        },
+        Err(error) => PandocStatus {
+            installed: false,
+            version: None,
+            error: Some(error),
+        },
+    }
+}
+
+fn run_winget_pandoc_install() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let status = Command::new("winget")
+            .args([
+                "install",
+                "--id",
+                "JohnMacFarlane.Pandoc",
+                "-e",
+                "--source",
+                "winget",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+                "--silent",
+            ])
+            .status()
+            .map_err(|err| format!("Failed to start winget: {}", err))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("winget exited with status {}", status))
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Automatic Pandoc install is only supported on Windows.".to_string())
+    }
+}
+
+fn ensure_pandoc_available_with<C, I>(mut check: C, mut install: I) -> Result<Vec<String>, Vec<String>>
+where
+    C: FnMut() -> Result<String, String>,
+    I: FnMut() -> Result<(), String>,
+{
+    let mut logs = vec![];
+    match check() {
+        Ok(version) => {
+            logs.push(format!("Pandoc detected: {}", first_line(&version)));
+            return Ok(logs);
+        }
+        Err(error) => {
+            logs.push(PANDOC_REQUIRED_MESSAGE.to_string());
+            logs.push(format!("Pandoc detection failed: {}", error));
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        logs.push(format!("Attempting automatic install: {}", PANDOC_INSTALL_COMMAND));
+        if let Err(error) = install() {
+            logs.push(format!("Pandoc automatic install failed: {}", error));
+            logs.push(format!("Manual install command: {}", PANDOC_INSTALL_COMMAND));
+            return Err(logs);
+        }
+        logs.push("Pandoc automatic install completed. Rechecking pandoc --version.".to_string());
+        match check() {
+            Ok(version) => {
+                logs.push(format!("Pandoc detected: {}", first_line(&version)));
+                Ok(logs)
+            }
+            Err(error) => {
+                logs.push(format!("Pandoc still unavailable after install: {}", error));
+                logs.push(format!("Manual install command: {}", PANDOC_INSTALL_COMMAND));
+                Err(logs)
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = install;
+        logs.push("Automatic Pandoc install is only supported on Windows.".to_string());
+        logs.push("Install Pandoc from https://pandoc.org/installing.html and retry.".to_string());
+        Err(logs)
+    }
+}
+
+fn ensure_pandoc_available() -> Result<Vec<String>, Vec<String>> {
+    ensure_pandoc_available_with(pandoc_version_from_command, run_winget_pandoc_install)
+}
+
+fn failed_export_job(project_id: String, mode: ManuscriptMode, logs: Vec<String>) -> ExportJob {
+    ExportJob {
+        id: format!("export_{}", Uuid::new_v4()),
+        project_id,
+        mode,
+        status: ExportStatus::Failed,
+        output_path: String::new(),
+        logs,
+        created_at: now_iso(),
+    }
+}
+
+fn run_pandoc(args: &[String], current_dir: &Path) -> Result<String, String> {
+    let pandoc = find_pandoc_executable();
+    let output = Command::new(&pandoc)
+        .args(args)
+        .current_dir(current_dir)
+        .output()
+        .map_err(|err| format!("{} ({})", err, pandoc.to_string_lossy()))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+fn word_pandoc_args(has_reference_doc: bool) -> Vec<String> {
+    let mut args = vec![
+        "exports/_intermediate/paper-word.md".to_string(),
+        "-f".to_string(),
+        "markdown".to_string(),
+        "-t".to_string(),
+        "docx".to_string(),
+        "-o".to_string(),
+        "exports/word/paper.docx".to_string(),
+    ];
+    if has_reference_doc {
+        args.push("--reference-doc=exports/word/reference.docx".to_string());
+    }
+    args
+}
+
+fn latex_pandoc_args() -> Vec<String> {
+    vec![
+        "exports/_intermediate/paper-latex.md".to_string(),
+        "-f".to_string(),
+        "markdown+raw_tex".to_string(),
+        "-t".to_string(),
+        "latex".to_string(),
+        "-s".to_string(),
+        "-o".to_string(),
+        "exports/latex/paper.tex".to_string(),
+    ]
 }
 
 fn copy_dir_recursive(
@@ -2682,7 +3206,7 @@ fn export_word_draft_placeholder(project_id: String) -> Result<ExportJob, String
         mode: ManuscriptMode::Word,
         status: ExportStatus::Pending,
         output_path: String::new(),
-        logs: vec!["Coming soon. Recommended route: Markdown/Pandoc to DOCX.".to_string()],
+        logs: vec!["Use Export Word Draft to run Pandoc DOCX export.".to_string()],
         created_at: now_iso(),
     })
 }
@@ -2695,7 +3219,7 @@ fn export_latex_placeholder(project_id: String) -> Result<ExportJob, String> {
         mode: ManuscriptMode::Latex,
         status: ExportStatus::Pending,
         output_path: String::new(),
-        logs: vec!["Coming soon. Current stable export is Markdown package.".to_string()],
+        logs: vec!["Use Export LaTeX Project to run Pandoc LaTeX export.".to_string()],
         created_at: now_iso(),
     })
 }
@@ -2704,25 +3228,39 @@ fn export_latex_placeholder(project_id: String) -> Result<ExportJob, String> {
 fn export_word_draft(project_id: String) -> Result<ExportJob, String> {
     let project = project_by_id(&project_id)?;
     let root = PathBuf::from(&project.root_path);
-    let output = root.join("exports/word/combined_word_draft.md");
+    let mut logs = match ensure_pandoc_available() {
+        Ok(logs) => logs,
+        Err(logs) => return Ok(failed_export_job(project_id, ManuscriptMode::Word, logs)),
+    };
+    fs::create_dir_all(root.join("exports/_intermediate")).map_err(|err| err.to_string())?;
+    fs::create_dir_all(root.join("exports/word")).map_err(|err| err.to_string())?;
+    let intermediate = root.join("exports/_intermediate/paper-word.md");
+    let output = root.join("exports/word/paper.docx");
     fs::write(
-        &output,
+        &intermediate,
         convert_citations_for_mode(&merged_sections(&project_id)?, &ManuscriptMode::Word)?,
     )
     .map_err(|err| err.to_string())?;
+    let reference_doc = root.join("exports/word/reference.docx");
+    let args = word_pandoc_args(reference_doc.exists());
+    if let Err(error) = run_pandoc(&args, &root) {
+        logs.push(format!("Pandoc DOCX export failed: {}", error));
+        return Ok(failed_export_job(project_id, ManuscriptMode::Word, logs));
+    }
     let tasks = scan_citation_tasks(project_id.clone())?;
     write_json(&root.join("exports/word/citation_tasks.json"), &tasks)?;
+    logs.extend(vec![
+        "Word draft exported with Pandoc.".to_string(),
+        "Kept [CITE: key] placeholders for Zotero Word plugin.".to_string(),
+        "Generated citation_tasks.json.".to_string(),
+    ]);
     Ok(ExportJob {
         id: format!("export_{}", Uuid::new_v4()),
         project_id,
         mode: ManuscriptMode::Word,
         status: ExportStatus::Success,
         output_path: output.to_string_lossy().to_string(),
-        logs: vec![
-            "Word draft exported as merged Markdown.".to_string(),
-            "Kept [CITE: key] placeholders for Zotero Word plugin.".to_string(),
-            "Generated citation_tasks.json.".to_string(),
-        ],
+        logs,
         created_at: now_iso(),
     })
 }
@@ -2731,25 +3269,40 @@ fn export_word_draft(project_id: String) -> Result<ExportJob, String> {
 fn export_latex(project_id: String) -> Result<ExportJob, String> {
     let project = project_by_id(&project_id)?;
     let root = PathBuf::from(&project.root_path);
-    let output = root.join("exports/latex/main.tex");
-    let body = convert_citations_for_mode(&merged_sections(&project_id)?, &ManuscriptMode::Latex)?;
-    let tex = format!("\\documentclass{{article}}\n\\usepackage[utf8]{{inputenc}}\n\\begin{{document}}\n\n{}\n\n\\bibliographystyle{{plain}}\n\\bibliography{{references}}\n\\end{{document}}\n", body);
-    fs::write(&output, tex).map_err(|err| err.to_string())?;
+    let mut logs = match ensure_pandoc_available() {
+        Ok(logs) => logs,
+        Err(logs) => return Ok(failed_export_job(project_id, ManuscriptMode::Latex, logs)),
+    };
+    fs::create_dir_all(root.join("exports/_intermediate")).map_err(|err| err.to_string())?;
+    fs::create_dir_all(root.join("exports/latex")).map_err(|err| err.to_string())?;
+    let intermediate = root.join("exports/_intermediate/paper-latex.md");
+    let output = root.join("exports/latex/paper.tex");
+    fs::write(
+        &intermediate,
+        convert_citations_for_mode(&merged_sections(&project_id)?, &ManuscriptMode::Latex)?,
+    )
+    .map_err(|err| err.to_string())?;
+    let args = latex_pandoc_args();
+    if let Err(error) = run_pandoc(&args, &root) {
+        logs.push(format!("Pandoc LaTeX export failed: {}", error));
+        return Ok(failed_export_job(project_id, ManuscriptMode::Latex, logs));
+    }
     let bib_src = root.join("references/bib/references.bib");
     let bib_dst = root.join("exports/latex/references.bib");
     if bib_src.exists() {
         fs::copy(bib_src, bib_dst).map_err(|err| err.to_string())?;
     }
+    logs.extend(vec![
+        "LaTeX paper.tex exported with Pandoc.".to_string(),
+        "references.bib copied when available.".to_string(),
+    ]);
     Ok(ExportJob {
         id: format!("export_{}", Uuid::new_v4()),
         project_id,
         mode: ManuscriptMode::Latex,
         status: ExportStatus::Success,
         output_path: output.to_string_lossy().to_string(),
-        logs: vec![
-            "LaTeX main.tex generated.".to_string(),
-            "references.bib copied when available.".to_string(),
-        ],
+        logs,
         created_at: now_iso(),
     })
 }
@@ -2847,6 +3400,8 @@ pub fn run() {
             export_project_folder,
             export_word_draft_placeholder,
             export_latex_placeholder,
+            check_pandoc_installed,
+            get_pandoc_version,
             init_workspace,
             read_settings,
             save_settings,
@@ -2872,6 +3427,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::sync::Mutex;
 
     static CWD_LOCK: Mutex<()> = Mutex::new(());
@@ -3099,6 +3655,33 @@ mod tests {
     }
 
     #[test]
+    fn opening_project_merges_section_files_missing_from_manifest() {
+        with_temp_cwd("merge_sections", |_dir| {
+            let project = create_project(create_input(
+                "Merge Paper",
+                SectionNamingMode::Numbered,
+                vec!["Known"],
+            ))
+            .expect("project");
+            let root = PathBuf::from(&project.root_path);
+            fs::write(
+                root.join("manuscript/sections/02_existing.md"),
+                "## Existing\n\nLoaded from disk.",
+            )
+            .expect("extra section");
+            let sections = list_sections(project.id.clone()).expect("sections");
+            assert_eq!(sections.len(), 2);
+            assert!(sections.iter().any(|section| section.filename == "02_existing.md"));
+            let updated = project_by_id(&project.id).expect("updated project");
+            assert!(updated
+                .manuscript
+                .sections
+                .iter()
+                .any(|section| section.path == "manuscript/sections/02_existing.md"));
+        });
+    }
+
+    #[test]
     fn deleting_project_removes_actual_paper_folder() {
         with_temp_cwd("delete_paper", |_dir| {
             let project = create_project(create_input(
@@ -3119,7 +3702,7 @@ mod tests {
     fn default_workspace_init_uses_workspace_and_light_settings() {
         with_temp_cwd("workspace_init", |dir| {
             let config = init_workspace(String::new()).expect("workspace");
-            assert_eq!(config.version, "2.0.0");
+            assert_eq!(config.version, APP_VERSION);
             assert_eq!(config.workspace_name, "workspace");
             let root = dir.join("workspace");
             assert!(root.join("papers").exists());
@@ -3127,5 +3710,114 @@ mod tests {
                 .expect("workspace settings");
             assert!(settings_raw.contains("\"theme\": \"light\""));
         });
+    }
+
+    #[test]
+    fn openai_compatible_response_parser_reads_chat_content() {
+        let value = serde_json::json!({
+            "choices": [{ "message": { "content": " Revised section. " } }]
+        });
+        assert_eq!(
+            parse_openai_chat_content(&value).expect("content"),
+            "Revised section."
+        );
+    }
+
+    #[test]
+    fn anthropic_response_parser_reads_text_block() {
+        let value = serde_json::json!({
+            "content": [
+                { "type": "tool_use", "name": "ignored" },
+                { "type": "text", "text": " Agent report. " }
+            ]
+        });
+        assert_eq!(
+            parse_anthropic_message_content(&value).expect("content"),
+            "Agent report."
+        );
+    }
+
+    #[test]
+    fn citation_conversion_handles_word_and_latex_modes() {
+        let markdown = "Word [CITE: Smith2023], pandoc [@Lee2024], latex \\cite{Zhang2025}.";
+        assert!(convert_citations_for_mode(markdown, &ManuscriptMode::Word)
+            .expect("word")
+            .contains("[CITE: Lee2024]"));
+        assert!(convert_citations_for_mode(markdown, &ManuscriptMode::Latex)
+            .expect("latex")
+            .contains("\\cite{Smith2023}"));
+    }
+
+    #[test]
+    fn pandoc_args_are_relative_to_project_root() {
+        let word_args = word_pandoc_args(true);
+        assert_eq!(word_args[0], "exports/_intermediate/paper-word.md");
+        assert!(word_args.contains(&"exports/word/paper.docx".to_string()));
+        assert!(!word_args.iter().any(|arg| arg.contains("workspace/papers")));
+        let latex_args = latex_pandoc_args();
+        assert_eq!(latex_args[0], "exports/_intermediate/paper-latex.md");
+        assert!(latex_args.contains(&"exports/latex/paper.tex".to_string()));
+    }
+
+    #[test]
+    fn pandoc_detected_skips_install() {
+        let install_called = Cell::new(false);
+        let logs = ensure_pandoc_available_with(
+            || Ok("pandoc 3.1\nfeatures".to_string()),
+            || {
+                install_called.set(true);
+                Ok(())
+            },
+        )
+        .expect("pandoc");
+        assert!(!install_called.get());
+        assert!(logs[0].contains("pandoc 3.1"));
+    }
+
+    #[test]
+    fn pandoc_finder_prefers_explicit_config_path() {
+        with_temp_cwd("pandoc_path", |dir| {
+            let fake = dir.join("pandoc.exe");
+            fs::write(&fake, "").expect("fake pandoc");
+            std::env::set_var("PAPERFORGE_PANDOC", fake.to_string_lossy().to_string());
+            assert_eq!(find_pandoc_executable(), fake);
+            std::env::remove_var("PAPERFORGE_PANDOC");
+        });
+    }
+
+    #[test]
+    fn pandoc_missing_install_failure_returns_logs() {
+        let result = ensure_pandoc_available_with(
+            || Err("not found".to_string()),
+            || Err("winget missing".to_string()),
+        );
+        assert!(result.is_err());
+        let logs = result.err().expect("logs");
+        assert!(logs.iter().any(|line| line.contains(PANDOC_REQUIRED_MESSAGE)));
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn pandoc_missing_winget_success_rechecks() {
+        let checks = Cell::new(0);
+        let installed = Cell::new(false);
+        let logs = ensure_pandoc_available_with(
+            || {
+                checks.set(checks.get() + 1);
+                if checks.get() == 1 {
+                    Err("not found".to_string())
+                } else {
+                    Ok("pandoc 3.1".to_string())
+                }
+            },
+            || {
+                installed.set(true);
+                Ok(())
+            },
+        )
+        .expect("installed");
+        assert!(installed.get());
+        assert_eq!(checks.get(), 2);
+        assert!(logs.iter().any(|line| line.contains("automatic install completed")));
     }
 }

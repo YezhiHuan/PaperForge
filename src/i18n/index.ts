@@ -22,6 +22,7 @@ export const messages = {
       createSection: "Create section",
       addCustomSection: "Add custom section",
       openOutputFolder: "Open output folder",
+      openProjectFolder: "Open project folder",
       updateTitle: "Update title",
       initWorkspace: "Initialize workspace"
     },
@@ -75,8 +76,8 @@ export const messages = {
       projectFolder: "Export Project Folder",
       wordDraft: "Export Word Draft",
       latexProject: "Export LaTeX Project",
-      wordSoon: "Coming soon. Recommended route: Markdown/Pandoc to DOCX.",
-      latexSoon: "Coming soon. Current stable export is Markdown package.",
+      wordSoon: "Requires Pandoc. PaperForge will try automatic install on Windows.",
+      latexSoon: "Requires Pandoc. PaperForge will try automatic install on Windows.",
       running: "Export running",
       combinedPreview: "Combined draft preview",
       preparing: "Preparing output"
@@ -89,9 +90,12 @@ export const messages = {
       defaultMode: "Default mode",
       exportMode: "Export mode",
       colorTheme: "Color theme",
+      provider: "Provider",
       baseUrl: "Base URL",
       apiKey: "API key",
       model: "Model",
+      temperature: "Temperature",
+      maxTokens: "Max tokens",
       citationStyle: "Citation style"
     }
   },
@@ -116,6 +120,7 @@ export const messages = {
       createSection: "新建章节",
       addCustomSection: "添加自定义章节",
       openOutputFolder: "打开导出文件夹",
+      openProjectFolder: "打开项目文件夹",
       updateTitle: "更新标题",
       initWorkspace: "初始化工作区"
     },
@@ -169,8 +174,8 @@ export const messages = {
       projectFolder: "导出项目文件夹",
       wordDraft: "导出 Word 草稿",
       latexProject: "导出 LaTeX 项目",
-      wordSoon: "即将支持。推荐路线：Markdown/Pandoc 转 DOCX。",
-      latexSoon: "即将支持。当前稳定导出为 Markdown 文件夹。",
+      wordSoon: "需要 Pandoc。Windows 上会尝试自动安装。",
+      latexSoon: "需要 Pandoc。Windows 上会尝试自动安装。",
       running: "正在导出",
       combinedPreview: "合并稿预览",
       preparing: "正在准备输出"
@@ -183,9 +188,12 @@ export const messages = {
       defaultMode: "默认写作模式",
       exportMode: "导出模式",
       colorTheme: "颜色主题",
+      provider: "Provider",
       baseUrl: "Base URL",
       apiKey: "API Key",
       model: "模型",
+      temperature: "温度",
+      maxTokens: "最大 tokens",
       citationStyle: "引用格式"
     }
   }

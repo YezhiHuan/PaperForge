@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.1.0
+
+- Connected Agent and AI proposal generation to OpenAI-compatible, OpenAI, and Anthropic providers
+- Added LLM provider, temperature, and max token settings
+- Added Pandoc-backed Word DOCX and LaTeX export
+- Added Windows Pandoc auto-install attempt through `winget` when Pandoc is missing
+- Enabled Word and LaTeX export buttons
+- Updated app version and title to PaperForge v2.1.0
+
 ## v2.0.0
 
 - Added Project Agent MVP with Ask, Edit, and Operate modes

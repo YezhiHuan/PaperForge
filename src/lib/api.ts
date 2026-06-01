@@ -33,7 +33,6 @@ import {
   createProjectConfig,
   makeId,
   makeSectionFilename,
-  mergeSections,
   nowIso,
   parseBibtexEntries,
   projectActivity,
@@ -74,9 +73,12 @@ export const defaultSettings: AppSettings = {
   workspaceRoot: "workspace",
   defaultManuscriptMode: "word",
   llmProvider: {
+    provider: "openai-compatible",
     baseUrl: "https://api.openai.com/v1",
     apiKey: "",
-    model: "gpt-4.1-mini"
+    model: "gpt-4.1-mini",
+    temperature: 0.3,
+    maxTokens: 2000
   },
   defaultCitationStyle: "apa",
   defaultExportMode: "markdown",
@@ -106,7 +108,7 @@ function normalizeProject(project: ProjectConfig): ProjectConfig {
   const targetJournal = project.targetJournal?.trim() || "Unspecified Journal";
   return {
     ...project,
-    version: project.version ?? "2.0.0",
+    version: project.version ?? "2.1.0",
     title,
     author,
     authors: project.authors ?? (author ? author.split(",").map((item) => item.trim()).filter(Boolean) : []),
@@ -202,7 +204,7 @@ export const api = {
       state.settings = { ...state.settings, workspaceRoot: rootPath || "workspace", themeMode: state.settings.themeMode || "light" };
       saveState(state);
       return {
-        version: "2.0.0",
+        version: "2.1.0",
         workspaceName: "workspace",
         createdAt: nowIso(),
         updatedAt: nowIso(),
@@ -572,9 +574,7 @@ export const api = {
   runAgent(projectId: string, mode: AgentMode, skillId: string, request: string, sectionId?: string) {
     return tauriOrBrowser<AgentRun>("run_agent", { projectId, mode, skillId, request, sectionId }, () => {
       const state = loadState();
-      const project = normalizeProject(state.projects.find((item) => item.id === projectId)!);
       const sections = state.sectionsByProject[projectId] ?? [];
-      const references = state.referencesByProject[projectId] ?? [];
       const skill = selectAgentSkill(mode, skillId, request);
       const activeSection = sections.find((section) => section.id === sectionId) ?? sections[0];
       const timestamp = nowIso();
@@ -582,38 +582,19 @@ export const api = {
       const changes = [];
       let report = "";
       const toolResults = skill.allowedTools.map((tool) => ({ tool, ok: true, message: `${tool} available in browser fallback.` }));
+      if (mode === "ask" || mode === "edit") {
+        throw new Error("Project Agent LLM requires the PaperForge desktop app.");
+      }
 
-      if (mode === "ask") {
-        const draft = mergeSections(sections);
-        const citationCount = [...draft.matchAll(/\[CITE:\s*([^\]]+)\]|\[@([^\]]+)\]|\\cite\{([^}]+)\}/g)].length;
-        filesRead.push("paperforge.json", ...sections.map((section) => section.path), "references/bib/references.bib");
-        report = [
-          `${skill.name} completed for ${project.title}.`,
-          `Sections: ${sections.length}. References: ${references.length}. Citation markers: ${citationCount}.`,
-          sections.length ? `Manuscript files checked: ${sections.map((section) => section.path).join(", ")}.` : "Empty manuscript is valid; no section files found.",
-          "No files were modified."
-        ].join("\n");
-      } else if (mode === "edit") {
-        if (activeSection) {
-          filesRead.push(activeSection.path);
-          const prefix = skill.id === "edit.translate-zh-en" ? "Translation/polish draft" : "Academic polish draft";
-          const proposed = `${activeSection.content.trim()}\n\n> ${prefix}: provider abstraction ready. Review wording, preserve citations, and apply only if acceptable.\n`;
-          changes.push(createAgentChange(activeSection.path, activeSection.content, proposed));
-          report = `${skill.name} prepared a diff for ${activeSection.title}. Review before applying.`;
-        } else {
-          report = "No active section found. Create a section before using Edit mode.";
-        }
+      if (activeSection) {
+        filesRead.push(activeSection.path, "attachments/figures");
+        const figureMatch = request.match(/attachments\/figures\/[^\s)]+/i);
+        const figurePath = figureMatch?.[0] ?? "attachments/figures/figure-placeholder.png";
+        const proposed = `${activeSection.content.trim()}\n\n![Figure caption](${figurePath})\n`;
+        changes.push(createAgentChange(activeSection.path, activeSection.content, proposed));
+        report = "Insert Figure prepared a Markdown image reference. Only attachments/figures paths are accepted by the desktop safe filesystem.";
       } else {
-        if (activeSection) {
-          filesRead.push(activeSection.path, "attachments/figures");
-          const figureMatch = request.match(/attachments\/figures\/[^\s)]+/i);
-          const figurePath = figureMatch?.[0] ?? "attachments/figures/figure-placeholder.png";
-          const proposed = `${activeSection.content.trim()}\n\n![Figure caption](${figurePath})\n`;
-          changes.push(createAgentChange(activeSection.path, activeSection.content, proposed));
-          report = "Insert Figure prepared a Markdown image reference. Only attachments/figures paths are accepted by the desktop safe filesystem.";
-        } else {
-          report = "No active section found. Create a section before using Operate mode.";
-        }
+        report = "No active section found. Create a section before using Operate mode.";
       }
 
       const run: AgentRun = {
@@ -625,7 +606,7 @@ export const api = {
         status: changes.length ? "planned" : "completed",
         plan: {
           summary: `${skill.name}: ${request || "No request text provided."}`,
-          steps: mode === "ask" ? ["Inspect project metadata", "Read safe manuscript/reference context", "Return report"] : ["Read active section", "Prepare safe diff", "Wait for Apply or Reject"],
+          steps: ["Read active section", "Prepare safe diff", "Wait for Apply or Reject"],
           filesToRead: filesRead,
           filesToChange: changes.map((change) => change.path)
         },
@@ -698,21 +679,7 @@ export const api = {
 
   generateAiProposal(projectId: string, sectionId: string, instruction: string, selectedText: string, settings: AppSettings) {
     return tauriOrBrowser<AIProposal>("generate_ai_proposal", { projectId, sectionId, instruction, selectedText, settings }, () => {
-      const state = loadState();
-      const mockPrefix = settings.llmProvider.apiKey ? "Provider abstraction ready; mock proposal:" : "MOCK: no API key configured.";
-      const proposal: AIProposal = {
-        id: makeId("proposal"),
-        sectionId,
-        instruction,
-        originalText: selectedText,
-        proposedText: `${mockPrefix}\n\n${selectedText || "This paragraph"} can be revised with clearer research gap, cautious claims, and citation hooks such as [CITE: Zhang2023].`,
-        citationKeys: ["Zhang2023"],
-        createdAt: nowIso(),
-        status: "pending"
-      };
-      state.proposalsByProject[projectId] = [proposal, ...(state.proposalsByProject[projectId] ?? [])];
-      saveState(state);
-      return proposal;
+      throw new Error("AI proposal generation requires the PaperForge desktop app.");
     });
   },
 
@@ -737,19 +704,17 @@ export const api = {
   },
 
   async exportProject(projectId: string, mode: ManuscriptMode, sections: ManuscriptSection[]) {
-    const command = mode === "markdown" ? "export_markdown_package" : mode === "word" ? "export_word_draft_placeholder" : "export_latex_placeholder";
+    const command = mode === "markdown" ? "export_markdown_package" : mode === "word" ? "export_word_draft" : "export_latex";
     return tauriOrBrowser<ExportJob>(command, { projectId }, () => {
       if (mode !== "markdown") {
         return {
           id: makeId("export"),
           projectId,
           mode,
-          status: "pending",
+          status: "failed",
           outputPath: "",
           logs: [
-            mode === "word"
-              ? "Coming soon. Recommended route: Markdown/Pandoc to DOCX."
-              : "Coming soon. Current stable export is Markdown package."
+            "Desktop mode with Pandoc is required for Word and LaTeX export."
           ],
           createdAt: nowIso()
         };
