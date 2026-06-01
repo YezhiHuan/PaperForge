@@ -457,6 +457,40 @@ pre { white-space: pre-wrap; background: var(--bg); border: 1px solid var(--line
 .agent-run { display: grid; gap: 10px; margin-top: 12px; }
 .agent-list { display: grid; gap: 6px; margin-top: 8px; color: var(--muted); }
 .agent-list strong { color: var(--text); }
+.agent-subtitle { color: var(--muted); font-size: 12px; margin: 4px 0 8px; }
+.agent-chat-window {
+  display: grid;
+  gap: 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  max-height: 360px;
+  overflow: auto;
+  margin-bottom: 8px;
+}
+.agent-chat-empty { display: grid; gap: 8px; place-items: center; color: var(--muted); padding: 16px; text-align: center; }
+.agent-chat-empty p { margin: 0; font-size: 13px; }
+.chip-row { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+.chip { border: 1px solid var(--line); background: var(--panel); color: var(--text); padding: 4px 10px; border-radius: 999px; font-size: 12px; cursor: pointer; }
+.chip:hover { background: var(--hover); }
+.agent-bubble { display: grid; gap: 4px; padding: 8px 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); }
+.agent-bubble header { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.agent-bubble.user { background: var(--hover); }
+.agent-bubble.assistant { background: var(--panel); border-color: var(--accent); }
+.agent-bubble.tool { background: var(--bg); }
+.agent-bubble.thinking, .agent-bubble.error { background: var(--bg); color: var(--muted); flex-direction: row; align-items: center; gap: 8px; }
+.agent-bubble.error { color: var(--danger); }
+.agent-bubble-text { white-space: pre-wrap; margin: 0; font-size: 13px; line-height: 1.5; }
+.agent-tool-list { margin: 4px 0 0; padding-left: 18px; font-size: 12px; color: var(--muted); }
+.agent-tool-list code { background: var(--bg); padding: 1px 4px; border-radius: 4px; }
+.agent-args { font-family: "Cascadia Code", "JetBrains Mono", monospace; font-size: 11px; }
+.agent-trace-summary { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin: 4px 0; }
+.agent-chat-input { display: grid; gap: 6px; }
+.agent-chat-input textarea { resize: vertical; min-height: 56px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; color: var(--text); font: inherit; }
+.agent-chat-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.agent-legacy { margin-top: 10px; }
+.topbar-actions { display: flex; gap: 8px; align-items: center; }
 .diff-preview {
   font-family: "Cascadia Code", "JetBrains Mono", monospace;
   font-size: 12px;

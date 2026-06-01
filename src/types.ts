@@ -288,3 +288,35 @@ export interface TextFilePayload {
   path: string;
   content: string;
 }
+
+export interface AgentChatMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content?: string | null;
+  toolCallId?: string;
+  name?: string;
+  toolCalls?: AgentChatToolCallWire[];
+}
+
+export interface AgentChatToolCallWire {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
+export interface AgentChatToolTrace {
+  tool: string;
+  ok: boolean;
+  message: string;
+  arguments: unknown;
+  result?: string;
+  error?: string;
+  durationMs: number;
+}
+
+export interface AgentChatResponse {
+  text: string;
+  messages: AgentChatMessage[];
+  toolTraces: AgentChatToolTrace[];
+  iterations: number;
+  finishReason?: string;
+}

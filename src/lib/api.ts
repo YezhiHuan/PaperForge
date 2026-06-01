@@ -24,7 +24,10 @@ import type {
   SectionCreateInput,
   SectionRenameInput,
   TextFilePayload,
-  WorkspaceConfig
+  WorkspaceConfig,
+  AgentChatMessage,
+  AgentChatResponse,
+  AgentChatToolTrace,
 } from "../types";
 import {
   appLog,
@@ -529,6 +532,18 @@ export const api = {
       state.sectionsByProject[projectId] = sections.map((section) => section.path === path ? { ...section, content, updatedAt: nowIso() } : section);
       saveState(state);
       return { path, content };
+    });
+  },
+
+  deleteTextFile(projectId: string, path: string) {
+    return tauriOrBrowser<string>("delete_text_file", { projectId, path }, () => {
+      throw new Error("Deleting non-section files requires the PaperForge desktop app.");
+    });
+  },
+
+  agentChat(projectId: string, messages: AgentChatMessage[], settings: AppSettings) {
+    return tauriOrBrowser<AgentChatResponse>("agent_chat_with_tools", { request: { projectId, settings, messages } }, () => {
+      throw new Error("Agent tool chat requires the PaperForge desktop app. Run `npm run tauri:dev` to test tool calling.");
     });
   },
 

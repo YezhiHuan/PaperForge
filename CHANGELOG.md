@@ -87,3 +87,19 @@
 - Improved sidebar readability
 - Reworked settings behavior
 - Updated documentation
+
+## v2.2.1
+
+### Fixed
+- **Agent tool-call JSON error**: `agent_chat_with_tools` Tauri command builds the OpenAI Chat Completions body with a hard-coded JSON Schema tool array, sends `tool_call.function.arguments` as a JSON string (never an object, never double-encoded), and surfaces any partial or invalid argument string as a clear PaperForge-side error. Tool result `content` is always a string and the assistant `tool_calls` message is followed by the matching `role: "tool"` reply so the gateway never sees a stale `tool_call_id` without a result.
+- Provider JSON request debug log now masks the API key even inside long `system` / `user` strings.
+
+### Added
+- New `agent_chat_with_tools` Rust Tauri command that loops Chat Completions with `tools: [list_project_files, read_file, write_file, delete_file]`, executes the calls inside `ProjectFileSystem` (no escaping the project root), and returns the final assistant text plus the full tool call trace.
+- New `delete_text_file` Tauri command for the Agent `delete_file` tool. Frontend `api.deleteTextFile` and `api.agentChat` bindings.
+- **Copilot-style Agent UI**: chat bubbles for user / assistant / tool, a tool call list inside assistant messages that shows the tool name and the parsed arguments, an error bubble for any tool or LLM error, a clear button, a send button, an empty state with three starter chips, and a tool trace summary line. The legacy "Run Skill" panel still lives behind a collapsible "Advanced" section.
+- Top bar only shows **Literature** and **References**; the duplicate Settings and New Project buttons were removed. Settings remains in the sidebar footer; New Project remains in the Dashboard hero.
+- New Project auto-creates the workspace if it does not exist, so users no longer see the `paperforge init` prompt before their first paper.
+- New i18n keys: `actions.literature`, `actions.references`, `actions.clearChat`, `actions.send`, `actions.thinking`, `actions.advancedSkill` (en + zh).
+- `agent-subtitle`, `agent-chat-window`, `agent-bubble`, `agent-tool-list`, `agent-args`, `agent-trace-summary`, `agent-chat-input`, `topbar-actions`, `chip`, `chip-row` styles for the new agent UI and top bar.
+- APP_VERSION, Cargo crate version, `tauri.conf.json` `version`, and `tauri.conf.json` window `title` all bumped to `PaperForge v2.2.1`.

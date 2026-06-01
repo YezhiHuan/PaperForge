@@ -1,6 +1,6 @@
 # PaperForge
 
-Current version: `2.2.0`
+Current version: `2.2.1`
 
 PaperForge is a local-first AI manuscript writing desktop app. It organizes papers as local folders and connects Markdown sections, references, attachments, exports, and replaceable AI model settings.
 
@@ -29,7 +29,7 @@ npm run build
 npm run tauri build
 ```
 
-Lint is not configured in v2.1.1.
+Lint is not configured in v2.2.1.
 
 ## Workspace Init
 
@@ -57,7 +57,7 @@ workspace/
 
 ```json
 {
-  "version": "2.1.1",
+  "version": "2.2.1",
   "workspaceName": "workspace",
   "createdAt": "...",
   "updatedAt": "...",
@@ -116,9 +116,16 @@ Any text-format file under the project root can be opened from the **Files** tab
 After running any export, the right-panel **Export** tab shows a status pill (`success` / `warning` / `failed` / `running`), a cleaned-up output path (the Windows `\\?\` prefix is stripped, backslashes are normalized to forward slashes), a **Copy path** button, an **Open output folder** button, collapsible **Details** with the raw log lines, and per-warning cards with severity icons. The toast in the activity log no longer shows the raw `\\?\`-prefixed path.
 
 
+## v2.2.1 Agent And Top Bar
+
+- **Agent tool call JSON fixed**: `agent_chat_with_tools` builds the OpenAI Chat Completions body with a hard-coded JSON Schema tool array (`list_project_files`, `read_file`, `write_file`, `delete_file`) and sends `tool_call.function.arguments` as a JSON string. No more "invalid function arguments json string" errors from gateways.
+- **Copilot-style agent UI**: chat bubbles for user / assistant / tool, a tool call list inside assistant messages, an error bubble for any tool or LLM failure, a clear button, an empty state with three starter chips, and a tool trace summary. The legacy "Run Skill" panel still lives behind a collapsible **Advanced** section.
+- **Top bar slimmed down**: only **Literature** and **References** sit next to the project title. Settings remains in the sidebar footer; New Project remains in the Dashboard hero.
+- **Auto workspace init**: clicking **New Paper Project** now calls `paperforge init` automatically if the workspace does not exist yet, so first-time users no longer see a separate initialization step.
+- i18n for the new strings is in both English and Chinese.
 ## LLM Settings
 
-v2.1.1 keeps Settings as a standalone page. Open Settings from the top bar or sidebar footer; it no longer occupies the manuscript editor or right panel.
+v2.2.1 keeps Settings as a standalone page. Open Settings from the top bar or sidebar footer; it no longer occupies the manuscript editor or right panel.
 
 PaperForge connects the Agent and AI proposal flow to real model providers.
 
@@ -223,7 +230,7 @@ PaperForge does not generate Zotero Word fields. Use Zotero Word plugin for fina
 
 ## Export
 
-v2.1.1 supports:
+v2.2.1 supports:
 
 - Export JSON: writes current paper config to `exports/json/paperforge.json`
 - Export Markdown: writes a package under `exports/markdown/` with `paper.md`, sections, references, attachments, claims, and `export-report.json`
@@ -255,7 +262,7 @@ PaperForge also checks common Windows install locations such as `C:\Program File
 
 ## UI And Theme
 
-The app title displays `PaperForge v2.1.1`.
+The app title displays `PaperForge v2.2.1`.
 
 Default theme is light. Settings can switch light, dark, or eye-care theme. Production Windows desktop builds do not show an extra terminal window.
 
@@ -281,7 +288,7 @@ workspace/.paperforge/ai-models.json
 
 The repository ignores generated workspaces and local secrets.
 
-## v2.1.1 Limits
+## v2.2.1 Limits
 
 - Direct global `paperforge` command may require `npm link` or package installation; npm scripts work from the clone.
 - File picker is not implemented; workspace/project paths can be typed.
@@ -289,3 +296,5 @@ The repository ignores generated workspaces and local secrets.
 - Word and LaTeX export depend on Pandoc availability.
 - PDF parsing, vector search, Zotero local API, and secure OS secret storage are not implemented.
 - Project folder export is a snapshot, not a Git operation.
+
+

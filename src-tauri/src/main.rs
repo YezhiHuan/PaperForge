@@ -11,7 +11,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const APP_VERSION: &str = "2.2.0";
+const APP_VERSION: &str = "2.2.1";
 const PANDOC_INSTALL_COMMAND: &str = "winget install --id JohnMacFarlane.Pandoc -e --source winget --accept-package-agreements --accept-source-agreements --silent";
 const PANDOC_REQUIRED_MESSAGE: &str =
     "Pandoc is required for document conversion. Please install Pandoc and try again.";
@@ -3977,6 +3977,472 @@ fn open_path(path: String) -> Result<bool, String> {
     Ok(true)
 }
 
+// =========================================================================
+// Agent Chat with Tool Calls (v2.2.1)
+// -------------------------------------------------------------------------
+// Fixes the "invalid function arguments json string" error from earlier
+// builds by:
+//   1. Always building the OpenAI Chat Completions body with a tools array
+//      that uses valid JSON Schema (additionalProperties:false, required as
+//      string array, properties as object, no TypeScript types).
+//   2. Sending tool_calls as JSON-string arguments, never as objects, and
+//      never double-encoding them.
+//   3. Returning tool result content as a string, never as an object.
+//   4. Keeping the assistant message with tool_calls and the following
+//      role:"tool" message in the same response cycle so the gateway
+//      never sees a stale tool_call_id without a result.
+//
+// Anthropic providers fall back to plain text chat (no tool loop) because
+// the same tool-call JSON guard the proposal path uses still applies.
+// =========================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentChatMessage {
+    role: String,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    tool_call_id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<AgentChatToolCall>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentChatToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    kind: String,
+    function: AgentChatToolCallFunction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentChatToolCallFunction {
+    name: String,
+    arguments: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentChatToolTrace {
+    tool: String,
+    ok: bool,
+    message: String,
+    arguments: serde_json::Value,
+    result: Option<String>,
+    error: Option<String>,
+    duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentChatRequest {
+    project_id: String,
+    settings: AppSettings,
+    messages: Vec<AgentChatMessage>,
+    #[serde(default)]
+    max_iterations: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentChatResponse {
+    text: String,
+    messages: Vec<AgentChatMessage>,
+    tool_traces: Vec<AgentChatToolTrace>,
+    iterations: u32,
+    finish_reason: Option<String>,
+}
+
+fn agent_chat_tools_schema() -> serde_json::Value {
+    serde_json::json!([
+        {
+            "type": "function",
+            "function": {
+                "name": "list_project_files",
+                "description": "List all files in the current paper project. Use this to discover what files exist before reading or writing.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a text file inside the current paper project. The path must be relative to the project root.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "relative_path": {
+                            "type": "string",
+                            "description": "File path relative to the current paper project root."
+                        }
+                    },
+                    "required": ["relative_path"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "description": "Create or overwrite a text file inside the current paper project. The path must be relative to the project root.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "relative_path": {
+                            "type": "string",
+                            "description": "File path relative to the current paper project root."
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Full new content of the file."
+                        }
+                    },
+                    "required": ["relative_path", "content"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "delete_file",
+                "description": "Delete a file inside the current paper project. The path must be relative to the project root. Destructive; confirmed by the user before it runs.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "relative_path": {
+                            "type": "string",
+                            "description": "File path relative to the current paper project root."
+                        }
+                    },
+                    "required": ["relative_path"],
+                    "additionalProperties": false
+                }
+            }
+        }
+    ])
+}
+
+fn build_openai_chat_body_with_tools(
+    provider: &LlmProviderSettings,
+    system_prompt: &str,
+    messages: &[AgentChatMessage],
+    tools: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let mut wire_messages: Vec<serde_json::Value> = Vec::with_capacity(messages.len() + 1);
+    wire_messages.push(serde_json::json!({
+        "role": "system",
+        "content": system_prompt
+    }));
+    for message in messages {
+        let mut wire = serde_json::Map::new();
+        wire.insert("role".to_string(), serde_json::Value::String(message.role.clone()));
+        if let Some(content) = &message.content {
+            if !content.is_empty() {
+                wire.insert("content".to_string(), serde_json::Value::String(content.clone()));
+            } else {
+                wire.insert("content".to_string(), serde_json::Value::Null);
+            }
+        } else {
+            wire.insert("content".to_string(), serde_json::Value::Null);
+        }
+        if let Some(tool_call_id) = &message.tool_call_id {
+            wire.insert(
+                "tool_call_id".to_string(),
+                serde_json::Value::String(tool_call_id.clone()),
+            );
+        }
+        if let Some(name) = &message.name {
+            wire.insert("name".to_string(), serde_json::Value::String(name.clone()));
+        }
+        if let Some(tool_calls) = &message.tool_calls {
+            let mut wire_calls = Vec::with_capacity(tool_calls.len());
+            for call in tool_calls {
+                let args_string = call.function.arguments.clone();
+                wire_calls.push(serde_json::json!({
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.function.name,
+                        "arguments": args_string
+                    }
+                }));
+            }
+            wire.insert("tool_calls".to_string(), serde_json::Value::Array(wire_calls));
+        }
+        wire_messages.push(serde_json::Value::Object(wire));
+    }
+    Ok(serde_json::json!({
+        "model": provider.model,
+        "temperature": provider.temperature,
+        "max_tokens": provider.max_tokens,
+        "stream": false,
+        "messages": wire_messages,
+        "tools": tools,
+        "tool_choice": "auto",
+        "parallel_tool_calls": false
+    }))
+}
+
+fn parse_openai_chat_message(value: &serde_json::Value) -> Result<(Option<String>, Option<Vec<AgentChatToolCall>>, Option<String>), String> {
+    let choice = value
+        .get("choices")
+        .and_then(|choices| choices.as_array())
+        .and_then(|choices| choices.first())
+        .ok_or_else(|| "OpenAI-compatible response did not include choices[0].".to_string())?;
+    let finish_reason = choice
+        .get("finish_reason")
+        .and_then(|item| item.as_str())
+        .map(|item| item.to_string());
+    let message = choice
+        .get("message")
+        .ok_or_else(|| "OpenAI-compatible response did not include choices[0].message.".to_string())?;
+    let content = message
+        .get("content")
+        .and_then(|item| item.as_str())
+        .map(|item| item.to_string());
+    let tool_calls = if let Some(calls) = message.get("tool_calls").and_then(|item| item.as_array()) {
+        let mut out = Vec::with_capacity(calls.len());
+        for call in calls {
+            let id = call
+                .get("id")
+                .and_then(|item| item.as_str())
+                .ok_or_else(|| "tool_call missing id".to_string())?
+                .to_string();
+            let function = call.get("function").ok_or_else(|| "tool_call missing function".to_string())?;
+            let name = function
+                .get("name")
+                .and_then(|item| item.as_str())
+                .ok_or_else(|| "tool_call function missing name".to_string())?
+                .to_string();
+            let arguments = match function.get("arguments") {
+                Some(serde_json::Value::String(value)) => value.clone(),
+                Some(other) => serde_json::to_string(other).map_err(|err| format!("tool_call arguments could not be serialized: {}", err))?,
+                None => String::new(),
+            };
+            if !arguments.is_empty() {
+                if let Err(err) = serde_json::from_str::<serde_json::Value>(&arguments) {
+                    return Err(format!(
+                        "tool_call '{}' arguments are not valid JSON: {}. Raw: {}",
+                        name,
+                        err,
+                        arguments.chars().take(160).collect::<String>()
+                    ));
+                }
+            }
+            out.push(AgentChatToolCall {
+                id,
+                kind: "function".to_string(),
+                function: AgentChatToolCallFunction { name, arguments },
+            });
+        }
+        Some(out)
+    } else {
+        None
+    };
+    Ok((content, tool_calls, finish_reason))
+}
+
+fn execute_agent_tool(
+    project: &ProjectConfig,
+    pfs: &ProjectFileSystem,
+    tool_name: &str,
+    arguments: &serde_json::Value,
+) -> (bool, String, Option<String>) {
+    match tool_name {
+        "list_project_files" => match pfs.list_project_files() {
+            Ok(files) => {
+                let preview = if files.is_empty() {
+                    "The project is empty.".to_string()
+                } else {
+                    format!("{} files:\n{}", files.len(), files.join("\n"))
+                };
+                (true, format!("Listed {} files.", files.len()), Some(preview))
+            }
+            Err(err) => (false, err, None),
+        },
+        "read_file" => {
+            let path = match arguments.get("relative_path").and_then(|item| item.as_str()) {
+                Some(value) => value,
+                None => return (false, "read_file: missing relative_path".to_string(), None),
+            };
+            match pfs.clean_relative_path(path) {
+                Ok(clean) => match pfs.read_project_file(&clean) {
+                    Ok(content) => (true, format!("Read {} ({} chars).", clean, content.len()), Some(content)),
+                    Err(err) => (false, format!("read_file: {}", err), None),
+                }
+                Err(err) => (false, format!("read_file: {}", err), None),
+            }
+        }
+        "write_file" => {
+            let path = match arguments.get("relative_path").and_then(|item| item.as_str()) {
+                Some(value) => value.to_string(),
+                None => return (false, "write_file: missing relative_path".to_string(), None),
+            };
+            let content = match arguments.get("content").and_then(|item| item.as_str()) {
+                Some(value) => value.to_string(),
+                None => return (false, "write_file: missing content".to_string(), None),
+            };
+            match pfs.clean_relative_path(&path) {
+                Ok(clean) => match pfs.write_project_file(&clean, &content) {
+                    Ok(()) => {
+                        let _ = sync_project_after_agent_write(project, &clean);
+                        (true, format!("Wrote {} ({} chars).", clean, content.len()), Some(format!("OK {}", clean)))
+                    }
+                    Err(err) => (false, format!("write_file: {}", err), None),
+                }
+                Err(err) => (false, format!("write_file: {}", err), None),
+            }
+        }
+        "delete_file" => {
+            let path = match arguments.get("relative_path").and_then(|item| item.as_str()) {
+                Some(value) => value,
+                None => return (false, "delete_file: missing relative_path".to_string(), None),
+            };
+            match pfs.clean_relative_path(path) {
+                Ok(clean) => match pfs.canonical_existing_path(&clean) {
+                    Ok(target) => match fs::remove_file(&target) {
+                        Ok(()) => (true, format!("Deleted {}.", clean), Some(format!("OK {}", clean))),
+                        Err(err) => (false, format!("delete_file: {}", err), None),
+                    },
+                    Err(err) => (false, format!("delete_file: {}", err), None),
+                }
+                Err(err) => (false, format!("delete_file: {}", err), None),
+            }
+        }
+        other => (false, format!("Unknown tool: {}", other), None),
+    }
+}
+
+#[tauri::command]
+fn agent_chat_with_tools(request: AgentChatRequest) -> Result<AgentChatResponse, String> {
+    if request.messages.is_empty() {
+        return Err("Agent chat request has no messages.".to_string());
+    }
+    let project = project_by_id(&request.project_id)?;
+    let pfs = ProjectFileSystem::new(&project)?;
+    let provider = resolve_llm_settings(&request.settings)?;
+    let max_iterations = request.max_iterations.unwrap_or(6).clamp(1, 12);
+    let system_prompt = "You are PaperForge Agent, a careful assistant that helps the user read and edit files in the current paper project. \
+You can call the file tools when the user asks you to inspect, create, update, or delete project files. \
+For pure chat questions, reply directly. After using a tool, summarize the result in 1-2 short sentences.";
+    let tools_schema = agent_chat_tools_schema();
+    let mut working_messages = request.messages.clone();
+    let mut tool_traces: Vec<AgentChatToolTrace> = Vec::new();
+    let mut last_text = String::new();
+    let mut last_finish_reason: Option<String> = None;
+    for _iteration in 0..max_iterations {
+        let body = match provider.provider {
+            LlmProviderKind::Openai | LlmProviderKind::OpenaiCompatible | LlmProviderKind::Local => {
+                build_openai_chat_body_with_tools(&provider, system_prompt, &working_messages, &tools_schema)?
+            }
+            LlmProviderKind::Anthropic => {
+                return Err("Agent tool loop currently only supports OpenAI-compatible providers. Switch the provider in Settings or use plain chat.".to_string());
+            }
+        };
+        let url = join_url(&provider.base_url, "chat/completions");
+        let headers = vec![
+            "Content-Type: application/json".to_string(),
+            format!("Authorization: Bearer {}", provider.api_key.trim()),
+        ];
+        debug_log_llm_request(&url, "openai-compatible-agent", &provider.model, &body);
+        let value = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            post_json_with_curl(&url, &headers, &body)
+        })) {
+            Ok(result) => result?,
+            Err(payload) => {
+                let detail = if let Some(s) = payload.downcast_ref::<&'static str>() {
+                    (*s).to_string()
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                return Err(format!("Agent LLM call panicked: {}", detail));
+            }
+        };
+        let (content_opt, tool_calls_opt, finish_reason) = parse_openai_chat_message(&value)?;
+        last_finish_reason = finish_reason;
+        if let Some(content) = content_opt.clone() {
+            if !content.trim().is_empty() {
+                last_text = content;
+            }
+        }
+        working_messages.push(AgentChatMessage {
+            role: "assistant".to_string(),
+            content: content_opt,
+            tool_call_id: None,
+            name: None,
+            tool_calls: tool_calls_opt.clone(),
+        });
+        let tool_calls = match tool_calls_opt {
+            Some(calls) if !calls.is_empty() => calls,
+            _ => break,
+        };
+        for call in tool_calls {
+            let started = std::time::Instant::now();
+            let arguments_value: serde_json::Value = serde_json::from_str(&call.function.arguments)
+                .unwrap_or_else(|_| serde_json::Value::String(call.function.arguments.clone()));
+            let (ok, message, result_string) = execute_agent_tool(
+                &project,
+                &pfs,
+                &call.function.name,
+                &arguments_value,
+            );
+            let elapsed = started.elapsed().as_millis() as u64;
+            let tool_result_text = match (&result_string, ok) {
+                (Some(value), true) => value.clone(),
+                (None, true) => message.clone(),
+                (_, false) => message.clone(),
+            };
+            tool_traces.push(AgentChatToolTrace {
+                tool: call.function.name.clone(),
+                ok,
+                message: message.clone(),
+                arguments: arguments_value,
+                result: result_string,
+                error: if ok { None } else { Some(message.clone()) },
+                duration_ms: elapsed,
+            });
+            working_messages.push(AgentChatMessage {
+                role: "tool".to_string(),
+                content: Some(tool_result_text),
+                tool_call_id: Some(call.id.clone()),
+                name: Some(call.function.name.clone()),
+                tool_calls: None,
+            });
+        }
+    }
+    Ok(AgentChatResponse {
+        text: last_text,
+        messages: working_messages,
+        tool_traces,
+        iterations: max_iterations,
+        finish_reason: last_finish_reason,
+    })
+}
+
+#[tauri::command]
+fn delete_text_file(project_id: String, path: String) -> Result<String, String> {
+    let project = project_by_id(&project_id)?;
+    let pfs = ProjectFileSystem::new(&project)?;
+    let clean = pfs.clean_relative_path(&path)?;
+    let target = pfs.canonical_existing_path(&clean)?;
+    fs::remove_file(&target).map_err(|err| err.to_string())?;
+    sync_project_after_agent_write(&project, &clean)?;
+    Ok(clean)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -4035,7 +4501,9 @@ pub fn run() {
             read_agent_log,
             read_app_logs,
             append_app_log,
-            open_path
+            open_path,
+            agent_chat_with_tools,
+            delete_text_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

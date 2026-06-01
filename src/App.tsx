@@ -38,6 +38,9 @@ import type {
   AgentMode,
   AgentRun,
   AgentSkill,
+  AgentChatMessage,
+  AgentChatResponse,
+  AgentChatToolTrace,
   AppLog,
   AppSettings,
   CitationStatus,
@@ -159,6 +162,11 @@ function App() {
   const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
   const [agentLogs, setAgentLogs] = useState<AgentLogEntry[]>([]);
   const [agentLoading, setAgentLoading] = useState(false);
+  const [agentChat, setAgentChat] = useState<AgentChatMessage[]>([]);
+  const [agentChatInput, setAgentChatInput] = useState("");
+  const [agentChatRunning, setAgentChatRunning] = useState(false);
+  const [agentChatError, setAgentChatError] = useState("");
+  const [agentChatTraces, setAgentChatTraces] = useState<AgentChatToolTrace[]>([]);
   const [litForm, setLitForm] = useState({ filename: "", path: "", linkedCitekey: "", notes: "" });
   const [litQuery, setLitQuery] = useState("");
   const [litSearching, setLitSearching] = useState(false);
@@ -304,6 +312,9 @@ function App() {
 
   async function createProject(event: FormEvent) {
     event.preventDefault();
+    // Auto-create workspace if missing so the user does not have to call `paperforge init` first.
+    const wsRoot = projectForm.workspaceRoot || settings.workspaceRoot;
+    try { await api.initWorkspace(wsRoot); } catch (error) { addLog("warning", errorMessage(error, "Workspace init failed.")); }
     const project = await api.createProject({
       ...projectForm,
       workspaceRoot: projectForm.workspaceRoot || settings.workspaceRoot,
@@ -581,6 +592,50 @@ function App() {
     }
   }
 
+
+  async function sendAgentChat() {
+    if (!activeProject) return;
+    const text = agentChatInput.trim();
+    if (!text) return;
+    if (agentChatRunning) return;
+    setAgentChatRunning(true);
+    setAgentChatError("");
+    setAgentChatTraces([]);
+    const userMessage: AgentChatMessage = { role: "user", content: text };
+    const nextMessages = [...agentChat, userMessage];
+    setAgentChat(nextMessages);
+    setAgentChatInput("");
+    try {
+      const response: AgentChatResponse = await api.agentChat(activeProject.id, nextMessages, settings);
+      setAgentChat(response.messages);
+      setAgentChatTraces(response.toolTraces ?? []);
+      if (response.toolTraces && response.toolTraces.length) {
+        addLog("info", `Agent tool calls: ${response.toolTraces.map((trace) => trace.tool).join(", ")}`);
+      }
+      // Re-sync file tree + section list because tools may have written or deleted files.
+      try {
+        const tree = await api.listProjectFiles(activeProject.id);
+        setFileTree(tree);
+      } catch {}
+      try {
+        const updated = await api.readSections(activeProject.id);
+        if (Array.isArray(updated) && updated.length) setSections(updated);
+      } catch {}
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Agent chat failed.";
+      setAgentChatError(message);
+      addLog("error", message);
+    } finally {
+      setAgentChatRunning(false);
+    }
+  }
+
+  async function clearAgentChat() {
+    setAgentChat([]);
+    setAgentChatTraces([]);
+    setAgentChatError("");
+  }
+
   async function applyAgentChange(changeId: string) {
     if (!activeProject || !agentRun) return;
     const run = await api.applyAgentChange(activeProject.id, agentRun.id, changeId);
@@ -701,6 +756,8 @@ function App() {
         version={APP_VERSION}
         t={tr}
         language={settings.language}
+        onOpenLiterature={() => setToolTab("literature")}
+        onOpenReferences={() => setToolTab("references")}
       />
 
       {view === "settings" ? (
@@ -877,6 +934,14 @@ function App() {
             agentLogs={agentLogs}
             agentLoading={agentLoading}
             runAgent={runAgent}
+            agentChat={agentChat}
+            agentChatInput={agentChatInput}
+            setAgentChatInput={setAgentChatInput}
+            agentChatRunning={agentChatRunning}
+            sendAgentChat={sendAgentChat}
+            clearAgentChat={clearAgentChat}
+            agentChatError={agentChatError}
+            agentChatTraces={agentChatTraces}
             applyAgentChange={applyAgentChange}
             rejectAgentRun={rejectAgentRun}
             claims={claims}
@@ -937,7 +1002,9 @@ function TopBar({
   onSettings,
   version,
   t,
-  language
+  language,
+  onOpenLiterature,
+  onOpenReferences,
 }: {
   project: ProjectConfig | null;
   onDashboard: () => void;
@@ -946,6 +1013,8 @@ function TopBar({
   version: string;
   t: Translate;
   language: Language;
+  onOpenLiterature: () => void;
+  onOpenReferences: () => void;
 }) {
   return (
     <header className="topbar">
@@ -955,12 +1024,14 @@ function TopBar({
         <small>v{version}</small>
       </button>
       <div className="topbar-project">{project ? `${displayTitle(project.title, language)} · ${project.manuscriptMode}` : t("app.tagline")}</div>
-      <button className="secondary-btn" onClick={onSettings}>
-        <Settings size={15} /> {t("tools.settings")}
-      </button>
-      <button className="primary-btn" onClick={onNew}>
-        <Plus size={15} /> {t("actions.newProject")}
-      </button>
+      <div className="topbar-actions">
+        <button className="secondary-btn" onClick={onOpenLiterature} title="Open Literature Library">
+          <Library size={15} /> Literature
+        </button>
+        <button className="secondary-btn" onClick={onOpenReferences} title="Open Reference List">
+          <BookOpen size={15} /> References
+        </button>
+      </div>
     </header>
   );
 }
@@ -1283,6 +1354,14 @@ function RightPanel(props: {
   agentLogs: AgentLogEntry[];
   agentLoading: boolean;
   runAgent: () => void;
+  agentChat: AgentChatMessage[];
+  agentChatInput: string;
+  setAgentChatInput: (value: string) => void;
+  agentChatRunning: boolean;
+  sendAgentChat: () => void;
+  clearAgentChat: () => void;
+  agentChatError: string;
+  agentChatTraces: AgentChatToolTrace[];
   applyAgentChange: (changeId: string) => void;
   rejectAgentRun: () => void;
   claims: ClaimRecord[];
@@ -1388,98 +1467,189 @@ function ProjectInfoTool(props: Parameters<typeof RightPanel>[0]) {
 function AgentTool(props: Parameters<typeof RightPanel>[0]) {
   const filteredSkills = props.agentSkills.filter((skill) => skill.type === props.agentMode);
   const pendingChanges = props.agentRun?.changes.filter((change) => change.status === "pending") ?? [];
+  const traceSummary = props.agentChatTraces.length
+    ? `${props.agentChatTraces.length} tool call${props.agentChatTraces.length === 1 ? "" : "s"}: ${props.agentChatTraces.map((trace) => trace.tool).join(", ")}`
+    : "";
 
   return (
     <>
-      <h2>Agent Panel</h2>
+      <h2>Agent</h2>
+      <p className="agent-subtitle">Chat with the project Agent. It can list, read, write, and delete files inside the current paper project.</p>
+
       <div className="agent-summary">
         <span className="mode-chip">Project</span>
         <strong>{displayTitle(props.project.title, props.language)}</strong>
         <small>{props.project.rootPath}</small>
       </div>
 
-      <div className="stack">
-        <label>
-          Mode
-          <select value={props.agentMode} onChange={(event) => { props.setAgentMode(event.target.value as AgentMode); props.setAgentSkillId("auto"); }}>
-            <option value="ask">Ask</option>
-            <option value="edit">Edit</option>
-            <option value="operate">Operate</option>
-          </select>
-        </label>
-        <label>
-          Skill
-          <select value={props.agentSkillId} onChange={(event) => props.setAgentSkillId(event.target.value)}>
-            <option value="auto">Auto</option>
-            {filteredSkills.map((skill) => <option value={skill.id} key={skill.id}>{skill.name}</option>)}
-          </select>
-        </label>
-        <label>
-          User request
-          <textarea className="small-area" value={props.agentRequest} onChange={(event) => props.setAgentRequest(event.target.value)} />
-        </label>
+      <div className="agent-chat-window" aria-live="polite">
+        {props.agentChat.length === 0 && (
+          <div className="agent-chat-empty">
+            <Brain size={22} />
+            <p>Ask the Agent to list files, read a section, draft a paragraph, or clean up a draft.</p>
+            <div className="chip-row">
+              <button type="button" className="chip" onClick={() => props.setAgentChatInput("List all files in this project.")}>List project files</button>
+              <button type="button" className="chip" onClick={() => props.setAgentChatInput("Summarize the current manuscript.")}>Summarize manuscript</button>
+              <button type="button" className="chip" onClick={() => props.setAgentChatInput("Read the first manuscript section and check for [CITE: key] placeholders.")}>Check citations</button>
+            </div>
+          </div>
+        )}
+        {props.agentChat.map((message, index) => {
+          const text = typeof message.content === "string" ? message.content : "";
+          if (message.role === "tool") {
+            return (
+              <div className="agent-bubble tool" key={`msg-${index}`}>
+                <header><Clipboard size={12} /> Tool: {message.name ?? "result"}</header>
+                <pre>{text}</pre>
+              </div>
+            );
+          }
+          if (message.role === "assistant" && message.toolCalls && message.toolCalls.length) {
+            return (
+              <div className="agent-bubble assistant" key={`msg-${index}`}>
+                <header><Sparkles size={12} /> Agent · thinking</header>
+                <ul className="agent-tool-list">
+                  {message.toolCalls.map((call) => (
+                    <li key={call.id}><code>{call.function.name}</code> · <span className="agent-args">{call.function.arguments.slice(0, 120)}</span></li>
+                  ))}
+                </ul>
+                {text && <p className="agent-bubble-text">{text}</p>}
+              </div>
+            );
+          }
+          return (
+            <div className={`agent-bubble ${message.role}`} key={`msg-${index}`}>
+              <header>{message.role === "user" ? "You" : "Agent"}</header>
+              <p className="agent-bubble-text">{text || <em>(empty)</em>}</p>
+            </div>
+          );
+        })}
+        {props.agentChatRunning && (
+          <div className="agent-bubble thinking">
+            <Loader2 className="spin" size={14} /> Thinking…
+          </div>
+        )}
+        {props.agentChatError && (
+          <div className="agent-bubble error">
+            <AlertTriangle size={14} /> {props.agentChatError}
+          </div>
+        )}
       </div>
 
-      <button className="primary-btn wide" disabled={props.agentLoading} onClick={props.runAgent}>
-        {props.agentLoading ? <Loader2 className="spin" size={15} /> : <Sparkles size={15} />} Run Agent
-      </button>
-
-      {props.agentRun && (
-        <div className="agent-run">
-          <div className="proposal-card">
-            <span className={`status ${props.agentRun.status}`}>{props.agentRun.status}</span>
-            <strong>{props.agentRun.skillId}</strong>
-            <p>{props.agentRun.report}</p>
-          </div>
-
-          <details open>
-            <summary>Agent Plan</summary>
-            <div className="agent-list">
-              <strong>{props.agentRun.plan.summary}</strong>
-              {props.agentRun.plan.steps.map((step) => <span key={step}>{step}</span>)}
-            </div>
-          </details>
-
-          <details>
-            <summary>Files Read</summary>
-            <pre>{props.agentRun.filesRead.join("\n") || "None"}</pre>
-          </details>
-
-          <details open={pendingChanges.length > 0}>
-            <summary>Files To Change</summary>
-            <pre>{props.agentRun.plan.filesToChange.join("\n") || "None"}</pre>
-          </details>
-
-          {props.agentRun.changes.map((change) => (
-            <div className="proposal-card" key={change.id}>
-              <span className={`status ${change.status}`}>{change.status}</span>
-              <strong>{change.path}</strong>
-              <pre className="diff-preview">{change.diff}</pre>
-              {change.status === "pending" && (
-                <div className="row-actions">
-                  <button onClick={() => props.applyAgentChange(change.id)}>Apply</button>
-                  <button onClick={props.rejectAgentRun}>Reject</button>
-                  <button onClick={() => navigator.clipboard?.writeText(change.diff)}>Copy diff</button>
-                </div>
-              )}
-            </div>
-          ))}
+      {traceSummary && (
+        <div className="agent-trace-summary">
+          <Check size={12} /> {traceSummary}
         </div>
       )}
 
-      <details>
-        <summary>Agent Log</summary>
-        <div className="card-list">
-          {props.agentLogs.length === 0 && <div className="validation-card info"><span>No Agent runs yet.</span></div>}
-          {props.agentLogs.map((entry) => (
-            <div className="task-card" key={entry.id}>
-              <span className={`status ${entry.success ? "success" : "failed"}`}>{entry.success ? "success" : "failed"}</span>
-              <strong>{entry.skillId}</strong>
-              <p>{entry.request}</p>
-              <small>{entry.mode} · {entry.createdAt}</small>
-            </div>
-          ))}
+      <form
+        className="agent-chat-input"
+        onSubmit={(event) => { event.preventDefault(); props.sendAgentChat(); }}
+      >
+        <textarea
+          placeholder="Ask the Agent something. Examples: list files, read introduction.md, write a draft, delete scratch.md."
+          value={props.agentChatInput}
+          onChange={(event) => props.setAgentChatInput(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              props.sendAgentChat();
+            }
+          }}
+          disabled={props.agentChatRunning}
+          rows={2}
+        />
+        <div className="agent-chat-actions">
+          <button type="button" className="secondary-btn" onClick={props.clearAgentChat} disabled={props.agentChatRunning || props.agentChat.length === 0}>
+            <Trash2 size={13} /> Clear
+          </button>
+          <button type="submit" className="primary-btn" disabled={props.agentChatRunning || !props.agentChatInput.trim()}>
+            {props.agentChatRunning ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />} Send
+          </button>
         </div>
+      </form>
+
+      <details className="agent-legacy">
+        <summary>Advanced: Run a built-in Skill</summary>
+        <div className="stack">
+          <label>
+            Mode
+            <select value={props.agentMode} onChange={(event) => { props.setAgentMode(event.target.value as AgentMode); props.setAgentSkillId("auto"); }}>
+              <option value="ask">Ask</option>
+              <option value="edit">Edit</option>
+              <option value="operate">Operate</option>
+            </select>
+          </label>
+          <label>
+            Skill
+            <select value={props.agentSkillId} onChange={(event) => props.setAgentSkillId(event.target.value)}>
+              <option value="auto">Auto</option>
+              {filteredSkills.map((skill) => <option value={skill.id} key={skill.id}>{skill.name}</option>)}
+            </select>
+          </label>
+          <label>
+            Request
+            <textarea className="small-area" value={props.agentRequest} onChange={(event) => props.setAgentRequest(event.target.value)} />
+          </label>
+        </div>
+        <button className="primary-btn wide" disabled={props.agentLoading} onClick={props.runAgent}>
+          {props.agentLoading ? <Loader2 className="spin" size={15} /> : <Sparkles size={15} />} Run Skill
+        </button>
+
+        {props.agentRun && (
+          <div className="agent-run">
+            <div className="proposal-card">
+              <span className={`status ${props.agentRun.status}`}>{props.agentRun.status}</span>
+              <strong>{props.agentRun.skillId}</strong>
+              <p>{props.agentRun.report}</p>
+            </div>
+
+            <details open>
+              <summary>Plan</summary>
+              <div className="agent-list">
+                <strong>{props.agentRun.plan.summary}</strong>
+                {props.agentRun.plan.steps.map((step) => <span key={step}>{step}</span>)}
+              </div>
+            </details>
+
+            {props.agentRun.changes.length > 0 && (
+              <details open={pendingChanges.length > 0}>
+                <summary>Files To Change</summary>
+                <pre>{props.agentRun.plan.filesToChange.join("\n") || "None"}</pre>
+              </details>
+            )}
+
+            {props.agentRun.changes.map((change) => (
+              <div className="proposal-card" key={change.id}>
+                <span className={`status ${change.status}`}>{change.status}</span>
+                <strong>{change.path}</strong>
+                <pre className="diff-preview">{change.diff}</pre>
+                {change.status === "pending" && (
+                  <div className="row-actions">
+                    <button onClick={() => props.applyAgentChange(change.id)}>Apply</button>
+                    <button onClick={props.rejectAgentRun}>Reject</button>
+                    <button onClick={() => navigator.clipboard?.writeText(change.diff)}>Copy diff</button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <details>
+          <summary>Agent Log</summary>
+          <div className="card-list">
+            {props.agentLogs.length === 0 && <div className="validation-card info"><span>No Agent runs yet.</span></div>}
+            {props.agentLogs.map((entry) => (
+              <div className="task-card" key={entry.id}>
+                <span className={`status ${entry.success ? "success" : "failed"}`}>{entry.success ? "success" : "failed"}</span>
+                <strong>{entry.skillId}</strong>
+                <p>{entry.request}</p>
+                <small>{entry.mode} · {entry.createdAt}</small>
+              </div>
+            ))}
+          </div>
+        </details>
       </details>
     </>
   );

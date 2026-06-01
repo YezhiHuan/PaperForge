@@ -24,7 +24,13 @@ export const messages = {
       openOutputFolder: "Open output folder",
       openProjectFolder: "Open project folder",
       updateTitle: "Update title",
-      initWorkspace: "Initialize workspace"
+      initWorkspace: "Initialize workspace",
+      literature: "Literature",
+      references: "References",
+      clearChat: "Clear",
+      send: "Send",
+      thinking: "Thinking…",
+      advancedSkill: "Advanced: Run a built-in Skill"
     },
     dashboard: {
       headline: "Write papers from local folders, citations, evidence, and AI proposals.",
@@ -120,7 +126,13 @@ export const messages = {
       openOutputFolder: "打开导出文件夹",
       openProjectFolder: "打开项目文件夹",
       updateTitle: "更新标题",
-      initWorkspace: "初始化工作区"
+      initWorkspace: "初始化工作区",
+      literature: "文献",
+      references: "引用文献",
+      clearChat: "清空",
+      send: "发送",
+      thinking: "正在思考…",
+      advancedSkill: "高级：运行内置技能"
     },
     dashboard: {
       headline: "从本地文件夹、引用、证据和 AI 建议开始写论文。",
