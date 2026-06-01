@@ -13,6 +13,8 @@
 
 ### Fixed
 - Export result UI: the previous `proposal-card` dumped the raw `\\?\`-prefixed Windows path and a single combined log block. The new panel separates status, path, warnings, and details, with proper iconography and copy-path support.
+- AI requests no longer carry `tools`, `functions`, `function_call`, `tool_calls`, `response_format`, or any Responses API field. `call_llm` now builds the OpenAI-compatible Chat Completions body through a single guarded builder, sets `tool_choice: "none"` and `parallel_tool_calls: false` to force providers (Qwen / DashScope / OpenAI-compatible gateways) to stop emitting function calls, and aborts with a clear PaperForge-side error if a forbidden key is ever reintroduced. Anthropic Messages is also guarded. The outgoing payload is logged to stderr with the API key masked and with explicit `has_tools` / `tool_choice` / `response_format` fields. Response parsers now return clear, actionable errors when the model still emits `tool_calls` / `tool_use`, is truncated by `max_tokens`, or is blocked by a content filter.
+
 
 ## v2.1.1
 

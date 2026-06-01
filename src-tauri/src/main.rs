@@ -16,6 +16,129 @@ const PANDOC_INSTALL_COMMAND: &str = "winget install --id JohnMacFarlane.Pandoc 
 const PANDOC_REQUIRED_MESSAGE: &str =
     "Pandoc is required for document conversion. Please install Pandoc and try again.";
 
+/// Top-level keys that must never appear in the body of a PaperForge
+/// outbound LLM request. The list intentionally covers the full set of
+/// tool / function calling / structured output / Responses API fields
+/// so that we fail loudly if anyone ever reintroduces a tool schema
+/// or mixes a Chat Completions body with a Responses API body.
+/// Top-level keys that must never appear in the body of a PaperForge
+/// outbound LLM request. The list intentionally covers the full set of
+/// tool / function calling / structured output / Responses API fields
+/// so that we fail loudly if anyone ever reintroduces a tool schema
+/// or mixes a Chat Completions body with a Responses API body.
+///
+/// `tool_choice` and `parallel_tool_calls` are intentionally NOT in
+/// the list: those are the `tool_choice: "none"` and
+/// `parallel_tool_calls: false` "off switches" we send by default to
+/// force providers not to emit tool calls.
+const FORBIDDEN_LLM_KEYS: &[&str] = &[
+    // Chat Completions tool / function calling surface
+    "tools",
+    "functions",
+    "function_call",
+    // Assistant message tool calls that some clients accidentally echo back
+    "tool_calls",
+    // Structured output / JSON mode / strict schema
+    "response_format",
+    "strict",
+    "json_schema",
+    // OpenAI Responses API fields (must not leak into Chat Completions)
+    "response",
+    "input",
+    "instructions",
+    "previous_response_id",
+    "truncation",
+    "metadata",
+    "store",
+    "user",
+];
+
+/// Returns true when the JSON value contains any of
+/// `FORBIDDEN_LLM_KEYS` anywhere in the tree. The check is recursive so
+/// that a hidden `tools` array nested inside an otherwise innocuous
+/// `metadata` block is still caught.
+fn llm_body_has_forbidden_keys(body: &serde_json::Value) -> bool {
+    fn walk(value: &serde_json::Value, hits: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, child) in map {
+                    if FORBIDDEN_LLM_KEYS.iter().any(|bad| *bad == key) {
+                        hits.push(key.clone());
+                    }
+                    walk(child, hits);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    walk(item, hits);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut hits: Vec<String> = Vec::new();
+    walk(body, &mut hits);
+    !hits.is_empty()
+}
+
+/// Lists the offending keys found inside the body for use in error
+/// messages and debug logs.
+fn llm_body_forbidden_keys(body: &serde_json::Value) -> Vec<String> {
+    fn walk(value: &serde_json::Value, hits: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, child) in map {
+                    if FORBIDDEN_LLM_KEYS.iter().any(|bad| *bad == key) {
+                        hits.push(key.clone());
+                    }
+                    walk(child, hits);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    walk(item, hits);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut hits: Vec<String> = Vec::new();
+    walk(body, &mut hits);
+    hits.sort();
+    hits.dedup();
+    hits
+}
+
+/// Returns a JSON snapshot of the body for debug logging. The API key
+/// is masked because it is stored in the same auth header the request
+/// will use and must never reach the application log.
+fn llm_body_debug_log(body: &serde_json::Value) -> String {
+    let mut sanitized = body.clone();
+    fn walk(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (_key, child) in map.iter_mut() {
+                    walk(child);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items.iter_mut() {
+                    walk(item);
+                }
+            }
+            serde_json::Value::String(s) => {
+                if s.len() > 32 {
+                    s.replace_range(8..s.len() - 4, "****");
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(&mut sanitized);
+    serde_json::to_string(&sanitized).unwrap_or_else(|_| "<unprintable llm body>".to_string())
+}
+
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProjectCreateInput {
@@ -746,35 +869,95 @@ fn join_url(base_url: &str, endpoint: &str) -> String {
     )
 }
 
+/// Reads `choices[0].message.content` from an OpenAI-compatible
+/// Chat Completions response. If the model still emits a
+/// `tool_calls` array (some providers force-call tools even when
+/// `tool_choice` is "none"), the function returns a clear
+/// PaperForge-side error instead of silently surfacing an empty
+/// string. `finish_reason` is surfaced when present so users can see
+/// why the model stopped, and the refusal / refusal-style fields are
+/// passed through verbatim.
 fn parse_openai_chat_content(value: &serde_json::Value) -> Result<String, String> {
-    value
+    let choice = value
         .get("choices")
         .and_then(|choices| choices.as_array())
         .and_then(|choices| choices.first())
-        .and_then(|choice| choice.get("message"))
-        .and_then(|message| message.get("content"))
+        .ok_or_else(|| "OpenAI-compatible response did not include choices[0].".to_string())?;
+    let finish_reason = choice
+        .get("finish_reason")
+        .and_then(|item| item.as_str())
+        .map(|item| item.to_string());
+    let message = choice
+        .get("message")
+        .ok_or_else(|| "OpenAI-compatible response did not include choices[0].message.".to_string())?;
+    if let Some(tool_calls) = message.get("tool_calls") {
+        let preview = tool_calls.to_string();
+        let preview = preview.chars().take(160).collect::<String>();
+        return Err(match finish_reason.as_deref() {
+            Some(reason) => format!(
+                "OpenAI-compatible model returned tool_calls instead of text content (finish_reason={}, tool_calls={}). PaperForge does not support tool calling in this build. Change the model or update the prompt and retry.",
+                reason, preview
+            ),
+            None => format!(
+                "OpenAI-compatible model returned tool_calls instead of text content (tool_calls={}). PaperForge does not support tool calling in this build. Change the model or update the prompt and retry.",
+                preview
+            ),
+        });
+    }
+    let content = message
+        .get("content")
         .and_then(|content| content.as_str())
         .map(|content| content.trim().to_string())
-        .filter(|content| !content.is_empty())
-        .ok_or_else(|| "OpenAI-compatible response did not include choices[0].message.content.".to_string())
+        .filter(|content| !content.is_empty());
+    if let Some(content) = content {
+        return Ok(content);
+    }
+    if let Some(reason) = finish_reason.as_deref() {
+        if reason == "length" {
+            return Err("OpenAI-compatible response was truncated by max_tokens. Increase max_tokens in PaperForge settings or shorten the input.".to_string());
+        }
+        if reason == "content_filter" {
+            return Err("OpenAI-compatible response was blocked by a content filter.".to_string());
+        }
+    }
+    Err("OpenAI-compatible response did not include choices[0].message.content.".to_string())
 }
 
+/// Reads the first `text` block from an Anthropic `messages`
+/// response. If the model returns a `tool_use` block instead of
+/// text, PaperForge returns a clear error because the desktop build
+/// does not implement an agent tool loop.
 fn parse_anthropic_message_content(value: &serde_json::Value) -> Result<String, String> {
-    value
+    let blocks = value
         .get("content")
         .and_then(|content| content.as_array())
-        .and_then(|content| {
-            content.iter().find_map(|item| {
-                if item.get("type").and_then(|kind| kind.as_str()) == Some("text") {
-                    item.get("text").and_then(|text| text.as_str())
-                } else {
-                    None
+        .ok_or_else(|| "Anthropic response did not include content blocks.".to_string())?;
+    let mut saw_tool_use = false;
+    for block in blocks {
+        match block.get("type").and_then(|kind| kind.as_str()) {
+            Some("text") => {
+                if let Some(text) = block.get("text").and_then(|item| item.as_str()) {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        return Ok(trimmed.to_string());
+                    }
                 }
-            })
-        })
-        .map(|content| content.trim().to_string())
-        .filter(|content| !content.is_empty())
-        .ok_or_else(|| "Anthropic response did not include text content.".to_string())
+            }
+            Some("tool_use") => saw_tool_use = true,
+            _ => {}
+        }
+    }
+    if saw_tool_use {
+        return Err("Anthropic model returned a tool_use block instead of text content. PaperForge does not support tool calling in this build. Change the model or update the prompt and retry.".to_string());
+    }
+    let stop_reason = value
+        .get("stop_reason")
+        .and_then(|item| item.as_str())
+        .map(|item| item.to_string());
+    if stop_reason.as_deref() == Some("max_tokens") {
+        return Err("Anthropic response was truncated by max_tokens. Increase max_tokens in PaperForge settings or shorten the input.".to_string());
+    }
+    Err("Anthropic response did not include text content.".to_string())
 }
 
 fn curl_config_quote(value: &str) -> String {
@@ -902,44 +1085,139 @@ fn provider_auth_headers(provider: &LlmProviderSettings) -> Vec<String> {
     }
 }
 
+/// Builds a clean OpenAI-compatible Chat Completions body. The
+/// returned payload is guaranteed to:
+///   * contain only standard Chat Completions fields
+///   * disable tool / function calling via `tool_choice: "none"`
+///   * disable parallel tool calls via `parallel_tool_calls: false`
+///   * never include `tools`, `functions`, `function_call`,
+///     `response_format`, `strict`, or any Responses API field
+///
+/// The body is verified against `FORBIDDEN_LLM_KEYS` after
+/// construction so that any future regression that re-adds a
+/// tool schema fails loudly with a PaperForge-side error instead of
+/// being sent to the provider.
+fn build_openai_chat_body(
+    provider: &LlmProviderSettings,
+    system_prompt: &str,
+    user_prompt: &str,
+) -> Result<serde_json::Value, String> {
+    let body = serde_json::json!({
+        "model": provider.model,
+        "temperature": provider.temperature,
+        "max_tokens": provider.max_tokens,
+        "stream": false,
+        // Standard messages array. No tool_calls, no tool_call_id, no
+        // function_call are ever attached to any message.
+        "messages": [
+            { "role": "system", "content": system_prompt },
+            { "role": "user", "content": user_prompt }
+        ],
+        // Force the model to not call any tool. The OpenAI-compatible
+        // spec accepts `tool_choice: "none"` to disable tool calling
+        // even when a provider tries to force a default tool.
+        "tool_choice": "none",
+        // Defensive: belt-and-suspenders so providers that default to
+        // `true` (e.g. some Qwen deployments) cannot spawn tool
+        // calls in parallel.
+        "parallel_tool_calls": false
+    });
+    assert_clean_llm_body(&body, "OpenAI-compatible chat completions")?;
+    Ok(body)
+}
+
+/// Builds a clean Anthropic Messages API body. Anthropic accepts
+/// `tools` only as a top-level array; we never include it, and
+/// `system` is sent as a top-level string per the public docs.
+fn build_anthropic_message_body(
+    provider: &LlmProviderSettings,
+    system_prompt: &str,
+    user_prompt: &str,
+) -> Result<serde_json::Value, String> {
+    let body = serde_json::json!({
+        "model": provider.model,
+        "max_tokens": provider.max_tokens,
+        "temperature": provider.temperature,
+        "system": system_prompt,
+        "messages": [{ "role": "user", "content": user_prompt }],
+    });
+    assert_clean_llm_body(&body, "Anthropic messages")?;
+    Ok(body)
+}
+
+/// Verifies a body is safe to send: returns `Err` if any forbidden
+/// key (tool / function calling / Responses API / structured output)
+/// appears anywhere in the body. The endpoint label is included in
+/// the error so the user can tell which provider triggered the
+/// guard.
+fn assert_clean_llm_body(body: &serde_json::Value, endpoint: &str) -> Result<(), String> {
+    let hits = llm_body_forbidden_keys(body);
+    if hits.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "Refusing to send LLM request to {}: payload contains forbidden key(s) {}.          PaperForge does not send tool / function calling / structured output / Responses API fields.          Remove the offending key from the call site and rebuild.",
+        endpoint,
+        hits.join(", ")
+    ))
+}
+
+/// Emits a single-line debug record describing the outgoing LLM
+/// request. The body is masked to protect the API key, and the
+/// summary fields (`has_tools`, `tool_choice`, `response_format`)
+/// are printed explicitly so the operator can confirm the
+/// tool-calling surface is empty before the request leaves the
+/// process. Output goes to stderr so the desktop logger captures
+/// it without leaking into the export pipeline.
+fn debug_log_llm_request(endpoint: &str, provider_kind: &str, model: &str, body: &serde_json::Value) {
+    let has_tools = body.get("tools").is_some() || llm_body_has_forbidden_keys(body);
+    let tool_choice = body
+        .get("tool_choice")
+        .and_then(|value| match value {
+            serde_json::Value::String(s) => Some(s.clone()),
+            _ => Some(value.to_string()),
+        })
+        .unwrap_or_else(|| "<absent>".to_string());
+    let response_format = body
+        .get("response_format")
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "<absent>".to_string());
+    eprintln!(
+        "[paperforge.llm] endpoint={} provider={} model={} has_tools={} tool_choice={} response_format={} payload={}",
+        endpoint,
+        provider_kind,
+        model,
+        has_tools,
+        tool_choice,
+        response_format,
+        llm_body_debug_log(body)
+    );
+}
+
 fn call_llm(settings: &AppSettings, system_prompt: &str, user_prompt: &str) -> Result<String, String> {
     let provider = resolve_llm_settings(settings)?;
     match provider.provider {
         LlmProviderKind::Anthropic => {
-            let value = post_json_with_curl(
-                &join_url(&provider.base_url, "messages"),
-                &[
-                    "Content-Type: application/json".to_string(),
-                    format!("x-api-key: {}", provider.api_key.trim()),
-                    "anthropic-version: 2023-06-01".to_string(),
-                ],
-                &serde_json::json!({
-                    "model": provider.model,
-                    "max_tokens": provider.max_tokens,
-                    "temperature": provider.temperature,
-                    "system": system_prompt,
-                    "messages": [{ "role": "user", "content": user_prompt }],
-                }),
-            )?;
+            let url = join_url(&provider.base_url, "messages");
+            let headers = vec![
+                "Content-Type: application/json".to_string(),
+                format!("x-api-key: {}", provider.api_key.trim()),
+                "anthropic-version: 2023-06-01".to_string(),
+            ];
+            let body = build_anthropic_message_body(&provider, system_prompt, user_prompt)?;
+            debug_log_llm_request(&url, "anthropic", &provider.model, &body);
+            let value = post_json_with_curl(&url, &headers, &body)?;
             parse_anthropic_message_content(&value)
         }
         LlmProviderKind::Openai | LlmProviderKind::OpenaiCompatible | LlmProviderKind::Local => {
-            let value = post_json_with_curl(
-                &join_url(&provider.base_url, "chat/completions"),
-                &[
-                    "Content-Type: application/json".to_string(),
-                    format!("Authorization: Bearer {}", provider.api_key.trim()),
-                ],
-                &serde_json::json!({
-                    "model": provider.model,
-                    "temperature": provider.temperature,
-                    "max_tokens": provider.max_tokens,
-                    "messages": [
-                        { "role": "system", "content": system_prompt },
-                        { "role": "user", "content": user_prompt }
-                    ],
-                }),
-            )?;
+            let url = join_url(&provider.base_url, "chat/completions");
+            let headers = vec![
+                "Content-Type: application/json".to_string(),
+                format!("Authorization: Bearer {}", provider.api_key.trim()),
+            ];
+            let body = build_openai_chat_body(&provider, system_prompt, user_prompt)?;
+            debug_log_llm_request(&url, "openai-compatible", &provider.model, &body);
+            let value = post_json_with_curl(&url, &headers, &body)?;
             parse_openai_chat_content(&value)
         }
     }
@@ -4275,5 +4553,164 @@ mod tests {
         let settings = ai_model_value_to_settings(&value).expect("parsed");
         assert_eq!(settings.temperature, 0.8);
         assert_eq!(settings.max_tokens, 4096);
+    }}
+    #[test]
+    fn openai_chat_body_never_carries_tools_or_function_calling() {
+        let provider = LlmProviderSettings {
+            provider: LlmProviderKind::OpenaiCompatible,
+            base_url: "https://api.example.com/v1".to_string(),
+            api_key: "sk-test".to_string(),
+            model: "test-model".to_string(),
+            temperature: 0.3,
+            max_tokens: 2000,
+        };
+        let body = build_openai_chat_body(&provider, "system", "user")
+            .expect("openai body should build without forbidden keys");
+        let keys: Vec<String> = body
+            .as_object()
+            .expect("body is an object")
+            .keys()
+            .cloned()
+            .collect();
+        for forbidden in FORBIDDEN_LLM_KEYS {
+            assert!(
+                !keys.iter().any(|key| key == forbidden),
+                "OpenAI body should not carry top-level key {}",
+                forbidden
+            );
+        }
+        assert_eq!(
+            body.get("tool_choice").and_then(|v| v.as_str()),
+            Some("none"),
+            "OpenAI body must disable tool_choice"
+        );
+        assert_eq!(
+            body.get("parallel_tool_calls").and_then(|v| v.as_bool()),
+            Some(false),
+            "OpenAI body must disable parallel_tool_calls"
+        );
+        let messages = body
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .expect("messages array");
+        for message in messages {
+            let obj = message.as_object().expect("message is object");
+            for forbidden in ["tools", "tool_calls", "tool_call_id", "function_call", "name"] {
+                assert!(
+                    !obj.contains_key(forbidden),
+                    "Message must not carry field {}",
+                    forbidden
+                );
+            }
+        }
     }
-}
+
+    #[test]
+    fn anthropic_body_never_carries_tools() {
+        let provider = LlmProviderSettings {
+            provider: LlmProviderKind::Anthropic,
+            base_url: "https://api.anthropic.com/v1".to_string(),
+            api_key: "sk-ant-test".to_string(),
+            model: "claude-test".to_string(),
+            temperature: 0.3,
+            max_tokens: 2000,
+        };
+        let body = build_anthropic_message_body(&provider, "system", "user")
+            .expect("anthropic body should build without forbidden keys");
+        let keys: Vec<String> = body
+            .as_object()
+            .expect("body is an object")
+            .keys()
+            .cloned()
+            .collect();
+        for forbidden in FORBIDDEN_LLM_KEYS {
+            assert!(
+                !keys.iter().any(|key| key == forbidden),
+                "Anthropic body should not carry top-level key {}",
+                forbidden
+            );
+        }
+    }
+
+    #[test]
+    fn llm_body_forbidden_keys_detects_nested_tools() {
+        let body = serde_json::json!({
+            "model": "x",
+            "metadata": { "tools": [{ "type": "function" }] }
+        });
+        let hits = llm_body_forbidden_keys(&body);
+        assert!(hits.contains(&"tools".to_string()));
+    }
+
+    #[test]
+    fn assert_clean_llm_body_blocks_dirty_payload() {
+        let body = serde_json::json!({
+            "model": "x",
+            "tools": [{ "type": "function", "function": { "name": "x" } }]
+        });
+        let err = assert_clean_llm_body(&body, "test-endpoint")
+            .expect_err("dirty body must be rejected");
+        assert!(err.contains("forbidden key"));
+        assert!(err.contains("tools"));
+    }
+
+    #[test]
+    fn openai_response_with_tool_calls_returns_clear_error() {
+        let value = serde_json::json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_function_abc",
+                        "type": "function",
+                        "function": { "name": "x", "arguments": "{}" }
+                    }]
+                }
+            }]
+        });
+        let err = parse_openai_chat_content(&value)
+            .expect_err("tool_calls response must be rejected");
+        assert!(err.contains("tool_calls"));
+        assert!(err.contains("call_function_abc"));
+    }
+
+    #[test]
+    fn openai_response_truncated_by_length_surfaces_reason() {
+        let value = serde_json::json!({
+            "choices": [{
+                "finish_reason": "length",
+                "message": { "role": "assistant", "content": null }
+            }]
+        });
+        let err = parse_openai_chat_content(&value)
+            .expect_err("length finish must be reported");
+        assert!(err.contains("max_tokens"));
+    }
+
+    #[test]
+    fn anthropic_response_with_tool_use_returns_clear_error() {
+        let value = serde_json::json!({
+            "stop_reason": "tool_use",
+            "content": [
+                { "type": "tool_use", "id": "toolu_1", "name": "x", "input": {} }
+            ]
+        });
+        let err = parse_anthropic_message_content(&value)
+            .expect_err("tool_use response must be rejected");
+        assert!(err.contains("tool_use"));
+    }
+
+    #[test]
+    fn llm_body_debug_log_masks_long_secrets() {
+        let body = serde_json::json!({
+            "model": "x",
+            "messages": [
+                { "role": "system", "content": "sk-1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZabcd" }
+            ]
+        });
+        let logged = llm_body_debug_log(&body);
+        assert!(!logged.contains("1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZabcd"));
+        assert!(logged.contains("****"));
+    }
