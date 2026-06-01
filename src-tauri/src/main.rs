@@ -2667,17 +2667,23 @@ fn bib_field(body: &str, field: &str) -> String {
 
 #[tauri::command]
 fn parse_bibtex(bibtex: String) -> Result<Vec<ReferenceItem>, String> {
-    let entry_re = Regex::new(r"(?is)@\w+\s*\{\s*([^,\s]+)\s*,(.*?)(?=\n@\w+\s*\{|$)")
-        .map_err(|err| err.to_string())?;
+    let start_re = Regex::new(r"@(?:\w+)\s*\{" ).map_err(|err| err.to_string())?;
+    let field_re = Regex::new(r"^\s*([^,\s]+)\s*,\s*([\s\S]*)$").map_err(|err| err.to_string())?;
     let mut refs = vec![];
-    for capture in entry_re.captures_iter(&bibtex) {
-        let citekey = capture
+    let starts: Vec<usize> = start_re.find_iter(&bibtex).map(|m| m.end()).collect();
+    for (i, start) in starts.iter().enumerate() {
+        let end = starts.get(i + 1).copied().unwrap_or_else(|| bibtex.len());
+        let raw = bibtex[*start..end].trim();
+        let block = raw.trim_end_matches(|c: char| c == '}' || c == ' ' || c == '\n' || c == '\r').trim();
+        let Some(captures) = field_re.captures(block) else { continue };
+        let citekey = captures
             .get(1)
             .map(|m| m.as_str())
             .unwrap_or("")
             .trim()
             .to_string();
-        let body = capture.get(2).map(|m| m.as_str()).unwrap_or("");
+        let body = captures.get(2).map(|m| m.as_str()).unwrap_or("");
+        if citekey.is_empty() { continue }
         let authors = bib_field(body, "author")
             .split(" and ")
             .filter(|item| !item.trim().is_empty())
@@ -4201,5 +4207,45 @@ mod tests {
         assert!(installed.get());
         assert_eq!(checks.get(), 2);
         assert!(logs.iter().any(|line| line.contains("automatic install completed")));
+    }
+
+    #[test]
+    fn parse_bibtex_empty_input_returns_empty_vec() {
+        let refs = parse_bibtex(String::new()).expect("empty");
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn parse_bibtex_only_at_string_is_skipped() {
+        let bib = "@string{plain = \"Hello, world\"}".to_string();
+        let refs = parse_bibtex(bib).expect("string");
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn parse_bibtex_two_entries_extract_fields() {
+        let bib = "@article{key1,
+            title  = {First Title},
+            author = {Doe, J. and Smith, A.},
+            year   = {2024},
+            doi    = {10.1/abc}
+        }
+        @book{key2,
+            title  = {Second Title},
+            author = {Brown, B.},
+            year   = {2022}
+        }
+        @string{marker = \"ignored\"}".to_string();
+        let refs = parse_bibtex(bib).expect("two entries");
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].citekey, "key1");
+        assert_eq!(refs[0].title, "First Title");
+        assert_eq!(refs[0].year, "2024");
+        assert_eq!(refs[0].doi, "10.1/abc");
+        assert_eq!(refs[0].authors, vec!["Doe, J.".to_string(), "Smith, A.".to_string()]);
+        assert_eq!(refs[1].citekey, "key2");
+        assert_eq!(refs[1].title, "Second Title");
+        assert_eq!(refs[1].year, "2022");
+        assert_eq!(refs[1].authors, vec!["Brown, B.".to_string()]);
     }
 }

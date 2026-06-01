@@ -19,6 +19,7 @@
 ### Fixed
 - Fixed Word export status handling when output is generated but post-processing/reveal has warnings
 - Fixed Word/LaTeX export to keep the success toast when only the post-Pandoc citation-tasks step fails, and surfaced the real Rust error in the frontend catch (Tauri `Result::Err(String)` is no longer hidden behind a generic fallback message)
+- Fixed BibTeX reference parser: the previous regex used `(?=...)` lookahead which the standard Rust `regex` crate rejects, causing `list_references` / `scan_citation_tasks` to fail on every project open. Replaced with a two-pass split that needs no look-around
 - Fixed localhost native prompt/confirm/alert dialogs during rename/delete/error flows
 - Fixed project entry so noncritical side-panel load errors no longer block opening a paper
 
