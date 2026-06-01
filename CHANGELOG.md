@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.2.0
+
+### Added
+- Sidebar now has Writing / Files tabs. Writing mode lists manuscript sections as a clean numbered list; Files mode shows the full project tree. Choice persists across reloads.
+- Text file viewer: any text-format file (`.md`, `.json`, `.bib`, `.bibtex`, `.tex`, `.txt`, `.csv`, `.tsv`, `.xml`, `.yaml`, `.yml`, `.toml`, `.log`, `.cfg`, `.ini`, `.rst`, `.html`, `.css`, `.js`, `.ts`, `.tsx`, `.jsx`) can be opened from the file tree. Markdown keeps its edit / preview toggle; other text files show a monospace view with line numbers, switch to a textarea for editing, and save back through the same `writeTextFile` path. Binary / unknown extensions are rendered as a disabled row with a "Binary file, not previewable" tooltip.
+- Export result panel: status pill (success / warning / failed / running), per-mode friendly title, cleaned-up output path (Windows `\\?\` prefix stripped, backslashes normalized to forward slashes), copy-path button, "Open output folder", collapsible details with raw log lines, and per-warning cards with severity icons.
+
+### Changed
+- AI provider settings no longer expose `temperature` or `max tokens`. The Rust struct keeps both fields with `#[serde(default)]` so existing `settings.json` files continue to parse; the values are always the backend defaults (`0.3` temperature, `2000` max tokens) and are still sent to the provider on each request. No API or wire-shape change.
+- Manuscript sections are no longer rendered as a regular directory node in the file tree. They live in the new Writing tab.
+
+### Fixed
+- Export result UI: the previous `proposal-card` dumped the raw `\\?\`-prefixed Windows path and a single combined log block. The new panel separates status, path, warnings, and details, with proper iconography and copy-path support.
+
 ## v2.1.1
 
 ### Added

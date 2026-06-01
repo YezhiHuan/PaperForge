@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  AlertTriangle,
   BookOpen,
   Brain,
   Check,
@@ -54,6 +55,7 @@ import type {
   ReferenceItem,
   SectionNamingMode,
   SectionTemplateId,
+  SidebarMode,
   ThemeMode
 } from "./types";
 
@@ -61,6 +63,22 @@ type ToolTab = "info" | "agent" | "references" | "citations" | "literature" | "c
 type Translate = (key: MessageKey) => string;
 type AppView = "main" | "settings";
 type ActiveMarkdownFile = { path: string; name: string; content: string; originalContent: string };
+
+const TEXT_FILE_EXTENSIONS = new Set([
+  "md", "markdown", "json", "bib", "bibtex", "tex", "txt",
+  "csv", "tsv", "xml", "yaml", "yml", "toml", "log",
+  "cfg", "ini", "rst", "html", "css", "js", "ts", "tsx", "jsx"
+]);
+
+function isTextFile(name: string, extension?: string): boolean {
+  const ext = (extension ?? (name.includes(".") ? name.split(".").pop() ?? "" : "")).toLowerCase();
+  return TEXT_FILE_EXTENSIONS.has(ext);
+}
+
+function viewerModeFor(name: string, extension?: string): "markdown" | "code" {
+  const ext = (extension ?? (name.includes(".") ? name.split(".").pop() ?? "" : "")).toLowerCase();
+  return ext === "md" || ext === "markdown" ? "markdown" : "code";
+}
 type DialogState =
   | { kind: "confirm"; title: string; description: string; confirmLabel: string; danger?: boolean; resolve: (value: boolean) => void }
   | { kind: "input"; title: string; description: string; defaultValue: string; placeholder?: string; confirmLabel: string; validate?: (value: string) => string | undefined; resolve: (value: string | null) => void }
@@ -723,8 +741,11 @@ function App() {
             fileTree={fileTree}
             fileTreeError={fileTreeError}
             onRefreshFiles={() => refreshFileTree(activeProject.id)}
-            onOpenMarkdownFile={openMarkdownFile}
+            onOpenTextFile={openMarkdownFile}
+            activeSectionId={activeSectionId}
             activeFilePath={activeMarkdownFile?.path ?? activeSection?.path}
+            mode={settings.sidebarMode ?? "writing"}
+            onModeChange={(next) => applySettings({ ...settings, sidebarMode: next })}
             t={tr}
             language={settings.language}
           />
@@ -760,7 +781,10 @@ function App() {
               </div>
             </div>
 
-            {activeDocument ? (
+            {activeDocument ? (() => {
+              const codeView = activeMarkdownFile !== null && viewerModeFor(activeMarkdownFile.name) === "code";
+              const codeLines = codeView ? activeDocument.content.split(/\r?\n/) : [];
+              return (
               <AnimatePresence mode="wait">
                 {editorMode === "edit" ? (
                   <motion.textarea
@@ -773,6 +797,23 @@ function App() {
                     value={activeDocument.content}
                     onChange={(event) => updateActiveSection(event.target.value)}
                   />
+                ) : codeView ? (
+                  <motion.div
+                    key="code"
+                    variants={panelVariants}
+                    initial="hidden"
+                    animate="show"
+                    exit="exit"
+                    className="code-view"
+                    aria-label={`Code view of ${activeDocumentTitle}`}
+                  >
+                    {codeLines.map((line, index) => (
+                      <div className="code-line" key={index}>
+                        <span className="code-ln">{index + 1}</span>
+                        <span className="code-tx">{line || " "}</span>
+                      </div>
+                    ))}
+                  </motion.div>
                 ) : (
                   <motion.article
                     key="preview"
@@ -785,7 +826,8 @@ function App() {
                   />
                 )}
               </AnimatePresence>
-            ) : (
+              );
+            })() : (
               <motion.div className="manuscript-empty" variants={panelVariants} initial="hidden" animate="show">
                 <FileText size={34} />
                 <h2>{tr("project.emptyManuscript")}</h2>
@@ -1005,8 +1047,11 @@ function Sidebar({
   fileTree,
   fileTreeError,
   onRefreshFiles,
-  onOpenMarkdownFile,
+  onOpenTextFile,
+  activeSectionId,
   activeFilePath,
+  mode,
+  onModeChange,
   t,
   language
 }: {
@@ -1021,8 +1066,11 @@ function Sidebar({
   fileTree: FileTreeNode[];
   fileTreeError: string;
   onRefreshFiles: () => void;
-  onOpenMarkdownFile: (path: string) => void;
+  onOpenTextFile: (path: string, extension?: string) => void;
+  activeSectionId: string;
   activeFilePath?: string;
+  mode: SidebarMode;
+  onModeChange: (mode: SidebarMode) => void;
   t: Translate;
   language: Language;
 }) {
@@ -1031,28 +1079,87 @@ function Sidebar({
       <div className="sidebar-scroll">
         <div className="sidebar-title">
           <Folder size={16} /> {displayTitle(project.title, language)}
-          <button className="tree-icon-btn" onClick={onRefreshFiles} title="Refresh files"><RefreshCw size={13} /></button>
+          {mode === "files" && (
+            <button className="tree-icon-btn" onClick={onRefreshFiles} title="Refresh files">
+              <RefreshCw size={13} />
+            </button>
+          )}
         </div>
-        <button className="tree-file new-section" onClick={onCreateSection}>
-          <Plus size={14} /> {t("project.newSection")}
-        </button>
-        {sections.length === 0 && <span className="tree-file muted">{t("project.emptyManuscript")}</span>}
-        {fileTreeError && <div className="tree-error">{fileTreeError}</div>}
-        {fileTree.map((node) => (
-          <FileTreeItem
-            key={node.relativePath}
-            node={node}
-            expandedFolders={expandedFolders}
-            setExpandedFolders={setExpandedFolders}
-            onOpenMarkdownFile={onOpenMarkdownFile}
-            onSelectSection={(section) => {
-              setActiveSectionId(section.id);
-            }}
-            onRenameSection={onRenameSection}
-            sectionByPath={new Map(sections.map((section) => [section.path, section]))}
-            activeFilePath={activeFilePath}
-          />
-        ))}
+        <div className="sidebar-tabs" role="tablist">
+          <button
+            className={mode === "writing" ? "sidebar-tab active" : "sidebar-tab"}
+            onClick={() => onModeChange("writing")}
+            role="tab"
+            aria-selected={mode === "writing"}
+            title="Writing mode: manuscript sections only"
+          >
+            <Pencil size={13} /> Writing
+          </button>
+          <button
+            className={mode === "files" ? "sidebar-tab active" : "sidebar-tab"}
+            onClick={() => onModeChange("files")}
+            role="tab"
+            aria-selected={mode === "files"}
+            title="Files mode: full project tree"
+          >
+            <Folder size={13} /> Files
+          </button>
+        </div>
+        {mode === "writing" && (
+          <div className="sidebar-writing">
+            <button className="tree-file new-section" onClick={onCreateSection}>
+              <Plus size={14} /> {t("project.newSection")}
+            </button>
+            {sections.length === 0 && (
+              <span className="tree-file muted">{t("project.emptyManuscript")}</span>
+            )}
+            {sections
+              .slice()
+              .sort((a, b) => a.order - b.order)
+              .map((section, index) => {
+                const isActive = activeSectionId === section.id;
+                return (
+                  <div key={section.id} className={isActive ? "section-pill active" : "section-pill"}>
+                    <button
+                      className="section-pill-main"
+                      onClick={() => setActiveSectionId(section.id)}
+                      title={section.path}
+                    >
+                      <span className="section-pill-num">{String(index + 1).padStart(2, "0")}</span>
+                      <span className="section-pill-title">{section.title || "(untitled)"}</span>
+                    </button>
+                    <button
+                      className="tree-icon-btn"
+                      onClick={() => onRenameSection(section)}
+                      title="Rename title; file path stays unchanged"
+                    >
+                      <Pencil size={12} />
+                    </button>
+                  </div>
+                );
+              })}
+          </div>
+        )}
+        {mode === "files" && (
+          <div className="sidebar-files">
+            {fileTreeError && <div className="tree-error">{fileTreeError}</div>}
+            {fileTree.map((node) => (
+              <FileTreeItem
+                key={node.relativePath}
+                node={node}
+                expandedFolders={expandedFolders}
+                setExpandedFolders={setExpandedFolders}
+                onOpenTextFile={onOpenTextFile}
+                onSelectSection={(section) => {
+                  setActiveSectionId(section.id);
+                }}
+                onRenameSection={onRenameSection}
+                sectionByPath={new Map(sections.map((section) => [section.path, section]))}
+                activeFilePath={activeFilePath}
+              />
+            ))}
+          </div>
+        )}
       </div>
       <button className="sidebar-settings" onClick={onSettings}>
         <Settings size={15} /> {t("project.settings")}
@@ -1065,7 +1172,7 @@ function FileTreeItem({
   node,
   expandedFolders,
   setExpandedFolders,
-  onOpenMarkdownFile,
+  onOpenTextFile,
   onSelectSection,
   onRenameSection,
   sectionByPath,
@@ -1075,7 +1182,7 @@ function FileTreeItem({
   node: FileTreeNode;
   expandedFolders: Record<string, boolean>;
   setExpandedFolders: (value: Record<string, boolean>) => void;
-  onOpenMarkdownFile: (path: string) => void;
+  onOpenTextFile: (path: string, extension?: string) => void;
   onSelectSection: (section: ManuscriptSection) => void;
   onRenameSection: (section: ManuscriptSection) => void;
   sectionByPath: Map<string, ManuscriptSection>;
@@ -1099,7 +1206,7 @@ function FileTreeItem({
                   node={child}
                   expandedFolders={expandedFolders}
                   setExpandedFolders={setExpandedFolders}
-                  onOpenMarkdownFile={onOpenMarkdownFile}
+                  onOpenTextFile={onOpenTextFile}
                   onSelectSection={onSelectSection}
                   onRenameSection={onRenameSection}
                   sectionByPath={sectionByPath}
@@ -1114,15 +1221,19 @@ function FileTreeItem({
     );
   }
   const section = sectionByPath.get(node.relativePath);
-  const isMarkdown = node.extension === "md" || node.name.toLowerCase().endsWith(".md");
+  const isText = isTextFile(node.name, node.extension);
   const active = activeFilePath === node.relativePath;
+  const className = isText
+    ? (active ? "tree-file text-file active" : "tree-file text-file")
+    : (active ? "tree-file disabled active" : "tree-file disabled");
   return (
-    <div className={active ? "tree-file-row active" : "tree-file-row"}>
+    <div className="tree-file-row">
       <button
-        className={isMarkdown ? "tree-file markdown-file" : "tree-file"}
+        className={className}
         style={{ marginLeft: 12 + depth * 10 }}
-        onClick={() => isMarkdown ? onOpenMarkdownFile(node.relativePath) : undefined}
-        title={node.relativePath}
+        onClick={isText ? () => onOpenTextFile(node.relativePath, node.extension) : undefined}
+        title={isText ? node.relativePath : "Binary file, not previewable"}
+        disabled={!isText}
       >
         <FileText size={14} /> {section?.title ?? node.name}
       </button>
@@ -1134,7 +1245,6 @@ function FileTreeItem({
     </div>
   );
 }
-
 function RightPanel(props: {
   tab: ToolTab;
   setTab: (tab: ToolTab) => void;
@@ -1499,6 +1609,88 @@ function ClaimTool(props: Parameters<typeof RightPanel>[0]) {
   );
 }
 
+function cleanExportPath(raw: string): string {
+  if (!raw) return "";
+  return raw
+    .replace(/^\\\\\?\\/, "")
+    .replace(/\\/g, "/");
+}
+
+function exportKindTitle(job: ExportJob | null): string {
+  if (!job) return "Export";
+  return "Export ready";
+}
+
+function ExportResult({ job, warnings, t, onOpenOutputFolder }: {
+  job: ExportJob;
+  warnings: ExportValidationWarning[];
+  t: Translate;
+  onOpenOutputFolder: () => void;
+}) {
+  const status = (job.status ?? "running").toLowerCase();
+  const path = cleanExportPath(job.outputPath);
+  const copyPath = async () => {
+    try {
+      if (navigator?.clipboard?.writeText && job.outputPath) {
+        await navigator.clipboard.writeText(job.outputPath);
+      }
+    } catch {
+      // ignore clipboard failures (e.g. window focus)
+    }
+  };
+  const statusIcon = status === "success" ? <Check size={13} />
+    : status === "failed" ? <X size={13} />
+    : status === "warning" ? <AlertTriangle size={13} />
+    : <Loader2 className="spin" size={13} />;
+  return (
+    <div className="export-result">
+      <div className="export-result-head">
+        <span className={`export-status-pill ${status}`}>
+          {statusIcon}
+          <span>{status}</span>
+        </span>
+        <span className="export-kind">{exportKindTitle(job)}</span>
+      </div>
+      {path ? (
+        <div className="export-path">
+          <code title={job.outputPath}>{path}</code>
+          <div className="export-path-actions">
+            <button className="icon-btn" onClick={copyPath} title="Copy path">
+              <Copy size={13} />
+            </button>
+            <button className="secondary-btn" onClick={onOpenOutputFolder}>
+              <ExternalLink size={13} /> {t("actions.openOutputFolder")}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <p className="export-path muted">{t("export.preparing")}</p>
+      )}
+      {warnings.length > 0 && (
+        <div className="export-warnings">
+          {warnings.map((warning) => (
+            <div className={`validation-card ${warning.severity}`} key={warning.id}>
+              {warning.severity === "error" ? <X size={14} /> :
+                warning.severity === "warning" ? <AlertTriangle size={14} /> :
+                <Check size={14} />}
+              <div>
+                <strong>{warning.severity}</strong>
+                <span>{warning.message}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {job.logs.length > 0 && (
+        <details className="export-logs">
+          <summary>Details</summary>
+          <pre>{job.logs.join("\n")}</pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function ExportTool(props: Parameters<typeof RightPanel>[0]) {
   return (
     <>
@@ -1511,27 +1703,13 @@ function ExportTool(props: Parameters<typeof RightPanel>[0]) {
         <button onClick={props.exportManifest}>{props.t("export.manifestJson")}</button>
       </div>
       {props.exportRunning && <div className="running-dots">{props.t("export.running")}<span>.</span><span>.</span><span>.</span></div>}
-      {props.exportWarnings.length > 0 && (
-        <div className="card-list">
-          {props.exportWarnings.map((warning) => (
-            <div className={`validation-card ${warning.severity}`} key={warning.id}>
-              <strong>{warning.severity}</strong>
-              <span>{warning.message}</span>
-            </div>
-          ))}
-        </div>
-      )}
       {props.exportJob && (
-        <div className="proposal-card">
-          <span className={`status ${props.exportJob.status}`}>{props.exportJob.status}</span>
-          <strong>{props.exportJob.outputPath || props.t("export.preparing")}</strong>
-          {props.exportJob.logs.map((line) => <p key={line}>{line}</p>)}
-          {props.exportJob.outputPath && (
-            <button className="secondary-btn wide" onClick={props.openOutputFolder}>
-              <ExternalLink size={14} /> {props.t("actions.openOutputFolder")}
-            </button>
-          )}
-        </div>
+        <ExportResult
+          job={props.exportJob}
+          warnings={props.exportWarnings}
+          t={props.t}
+          onOpenOutputFolder={props.openOutputFolder}
+        />
       )}
       <details>
         <summary>{props.t("export.combinedPreview")}</summary>
@@ -1540,7 +1718,6 @@ function ExportTool(props: Parameters<typeof RightPanel>[0]) {
     </>
   );
 }
-
 function SettingsPage({
   settings,
   setSettings,
@@ -1642,12 +1819,6 @@ function SettingsPage({
             <SettingField label={t("settings.model")} description="Choose fetched model or type one manually.">
               <input list="ai-models" value={settings.llmProvider.model} onChange={(event) => setSettings({ ...settings, llmProvider: { ...settings.llmProvider, model: event.target.value } })} />
               <datalist id="ai-models">{models.map((model) => <option value={model} key={model} />)}</datalist>
-            </SettingField>
-            <SettingField label={t("settings.temperature")} description="0 is deterministic; higher is more creative.">
-              <input type="number" min="0" max="2" step="0.1" value={settings.llmProvider.temperature} onChange={(event) => setSettings({ ...settings, llmProvider: { ...settings.llmProvider, temperature: Number(event.target.value) } })} />
-            </SettingField>
-            <SettingField label={t("settings.maxTokens")} description="Maximum response length.">
-              <input type="number" min="1" step="100" value={settings.llmProvider.maxTokens} onChange={(event) => setSettings({ ...settings, llmProvider: { ...settings.llmProvider, maxTokens: Number(event.target.value) } })} />
             </SettingField>
           </div>
           <div className="row-actions">

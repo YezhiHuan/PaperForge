@@ -1,6 +1,6 @@
 # PaperForge
 
-Current version: `2.1.1`
+Current version: `2.2.0`
 
 PaperForge is a local-first AI manuscript writing desktop app. It organizes papers as local folders and connects Markdown sections, references, attachments, exports, and replaceable AI model settings.
 
@@ -97,6 +97,24 @@ npm run paperforge:model:remove -- local
 Supported providers: `openai-compatible`, `openai`, `anthropic`.
 
 Do not commit `ai-models.json`; it may contain API keys.
+
+## Sidebar Modes
+
+The left sidebar has two tabs:
+
+- **Writing** (default) shows only the manuscript sections as a clean numbered list. Use this when you are focused on writing.
+- **Files** shows the full project tree (`manuscript/`, `references/`, `attachments/`, `exports/`).
+
+The selected tab is persisted in `AppSettings` and survives reloads.
+
+## Text File Viewer
+
+Any text-format file under the project root can be opened from the **Files** tab: `.md`, `.json`, `.bib`, `.bibtex`, `.tex`, `.txt`, `.csv`, `.tsv`, `.xml`, `.yaml`, `.yml`, `.toml`, `.log`, `.cfg`, `.ini`, `.rst`, `.html`, `.css`, `.js`, `.ts`, `.tsx`, `.jsx`. Markdown keeps its edit / preview toggle. Other text files open in a monospace view with line numbers and can be edited and saved through the same `writeTextFile` path used for section Markdown files. Binary / unknown extensions are rendered as a disabled row with a "Binary file, not previewable" tooltip.
+
+## Export Result Panel
+
+After running any export, the right-panel **Export** tab shows a status pill (`success` / `warning` / `failed` / `running`), a cleaned-up output path (the Windows `\\?\` prefix is stripped, backslashes are normalized to forward slashes), a **Copy path** button, an **Open output folder** button, collapsible **Details** with the raw log lines, and per-warning cards with severity icons. The toast in the activity log no longer shows the raw `\\?\`-prefixed path.
+
 
 ## LLM Settings
 

@@ -261,7 +261,10 @@ export interface AppSettings {
   defaultExportMode: ManuscriptMode;
   themeMode: ThemeMode;
   language: Language;
+  sidebarMode?: SidebarMode;
 }
+
+export type SidebarMode = "writing" | "files";
 
 export interface WorkspaceConfig {
   version: string;

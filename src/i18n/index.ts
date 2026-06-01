@@ -94,8 +94,6 @@ export const messages = {
       baseUrl: "Base URL",
       apiKey: "API key",
       model: "Model",
-      temperature: "Temperature",
-      maxTokens: "Max tokens",
       citationStyle: "Citation style"
     }
   },
@@ -192,8 +190,6 @@ export const messages = {
       baseUrl: "Base URL",
       apiKey: "API Key",
       model: "模型",
-      temperature: "温度",
-      maxTokens: "最大 tokens",
       citationStyle: "引用格式"
     }
   }

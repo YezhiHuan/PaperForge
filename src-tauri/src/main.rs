@@ -11,7 +11,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const APP_VERSION: &str = "2.1.1";
+const APP_VERSION: &str = "2.2.0";
 const PANDOC_INSTALL_COMMAND: &str = "winget install --id JohnMacFarlane.Pandoc -e --source winget --accept-package-agreements --accept-source-agreements --silent";
 const PANDOC_REQUIRED_MESSAGE: &str =
     "Pandoc is required for document conversion. Please install Pandoc and try again.";
@@ -4247,5 +4247,33 @@ mod tests {
         assert_eq!(refs[1].title, "Second Title");
         assert_eq!(refs[1].year, "2022");
         assert_eq!(refs[1].authors, vec!["Brown, B.".to_string()]);
+    }
+
+    #[test]
+    fn ai_settings_missing_fields_use_defaults() {
+        let value = serde_json::json!({
+            "provider": "openai",
+            "baseUrl": "https://api.openai.com/v1",
+            "apiKey": "sk-test",
+            "model": "gpt-4.1-mini"
+        });
+        let settings = ai_model_value_to_settings(&value).expect("parsed");
+        assert_eq!(settings.temperature, 0.3);
+        assert_eq!(settings.max_tokens, 2000);
+    }
+
+    #[test]
+    fn ai_settings_explicit_values_round_trip() {
+        let value = serde_json::json!({
+            "provider": "openai-compatible",
+            "baseUrl": "https://api.openai.com/v1",
+            "apiKey": "sk-test",
+            "model": "gpt-4.1-mini",
+            "temperature": 0.8,
+            "maxTokens": 4096
+        });
+        let settings = ai_model_value_to_settings(&value).expect("parsed");
+        assert_eq!(settings.temperature, 0.8);
+        assert_eq!(settings.max_tokens, 4096);
     }
 }
