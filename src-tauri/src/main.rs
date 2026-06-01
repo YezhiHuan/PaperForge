@@ -3163,6 +3163,11 @@ fn failed_export_job(project_id: String, mode: ManuscriptMode, logs: Vec<String>
     }
 }
 
+
+fn append_warn(logs: &mut Vec<String>, label: &str, err: impl ToString) {
+    logs.push(format!("WARN: {}: {}", label, err.to_string()));
+    }
+
 fn run_pandoc(args: &[String], current_dir: &Path) -> Result<String, String> {
     let pandoc = find_pandoc_executable();
     let output = Command::new(&pandoc)
@@ -3507,8 +3512,16 @@ fn export_word_draft(project_id: String) -> Result<ExportJob, String> {
         logs.push(format!("Pandoc DOCX export failed: {}", error));
         return Ok(failed_export_job(project_id, ManuscriptMode::Word, logs));
     }
-    let tasks = scan_citation_tasks(project_id.clone())?;
-    write_json(&root.join("exports/word/citation_tasks.json"), &tasks)?;
+    match scan_citation_tasks(project_id.clone()) {
+        Ok(tasks) => {
+            if let Err(error) = write_json(&root.join("exports/word/citation_tasks.json"), &tasks) {
+                append_warn(&mut logs, "citation_tasks.json write", error);
+            }
+        }
+        Err(error) => {
+            append_warn(&mut logs, "citation task scan", error);
+        }
+    }
     logs.extend(vec![
         "Word draft exported with Pandoc.".to_string(),
         "Kept [CITE: key] placeholders for Zotero Word plugin.".to_string(),
@@ -3550,7 +3563,9 @@ fn export_latex(project_id: String) -> Result<ExportJob, String> {
     let bib_src = root.join("references/bib/references.bib");
     let bib_dst = root.join("exports/latex/references.bib");
     if bib_src.exists() {
-        fs::copy(bib_src, bib_dst).map_err(|err| err.to_string())?;
+        if let Err(error) = fs::copy(&bib_src, &bib_dst) {
+            append_warn(&mut logs, "references.bib copy", error);
+        }
     }
     logs.extend(vec![
         "LaTeX paper.tex exported with Pandoc.".to_string(),

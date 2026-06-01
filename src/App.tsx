@@ -606,7 +606,7 @@ function App() {
       await refreshFileTree(activeProject.id);
       addLog(job.status === "success" ? "success" : job.status === "failed" ? "error" : "info", `${mode} export ${job.status}: ${job.outputPath || job.logs[0]}`);
     } catch (error) {
-      const message = error instanceof Error ? error.message : `${mode} export failed.`;
+      const message = errorMessage(error, `${mode} export failed.`);
       setExportJob({ id: "failed", projectId: activeProject.id, mode, status: "failed", outputPath: "", logs: [message], createdAt: nowIso() });
       addLog("error", message);
     } finally {
