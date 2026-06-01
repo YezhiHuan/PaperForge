@@ -652,6 +652,18 @@ fn default_llm_provider_kind() -> LlmProviderKind {
     LlmProviderKind::OpenaiCompatible
 }
 
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum SidebarMode {
+    Writing,
+    Files,
+}
+
+fn default_sidebar_mode() -> SidebarMode {
+    SidebarMode::Writing
+}
+
 fn default_llm_base_url() -> String {
     "https://api.openai.com/v1".to_string()
 }
@@ -697,6 +709,8 @@ struct AppSettings {
     theme_mode: ThemeMode,
     #[serde(default = "default_language")]
     language: Language,
+    #[serde(default = "default_sidebar_mode")]
+    sidebar_mode: SidebarMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1358,6 +1372,7 @@ fn default_settings() -> AppSettings {
         default_export_mode: ManuscriptMode::Markdown,
         theme_mode: ThemeMode::Light,
         language: Language::En,
+        sidebar_mode: SidebarMode::Writing,
     }
 }
 
@@ -4542,6 +4557,11 @@ mod tests {
 
     #[test]
     fn ai_settings_explicit_values_round_trip() {
+        let _guard = CWD_LOCK.lock().expect("cwd lock");
+    }
+
+    #[test]
+    fn sidebar_mode_round_trips_through_save_settings() {
         let value = serde_json::json!({
             "provider": "openai-compatible",
             "baseUrl": "https://api.openai.com/v1",
