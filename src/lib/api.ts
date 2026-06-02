@@ -87,6 +87,9 @@ export const defaultSettings: AppSettings = {
   },
   defaultCitationStyle: "apa",
   defaultExportMode: "markdown",
+  pandocExecutablePath: "",
+  wordTemplatePath: "",
+  latexTemplatePath: "",
   themeMode: "light",
   language: "en"
 };
@@ -775,6 +778,10 @@ export const api = {
       if (!settings.llmProvider.apiKey.trim()) throw new Error("API key is required. Configure it in Settings.");
       throw new Error("Model fetching requires the PaperForge desktop app.");
     });
+  },
+
+  testPandoc(settings: AppSettings) {
+    return tauriOrBrowser<string>("test_pandoc", { settings }, () => "Pandoc test requires the PaperForge desktop app.");
   },
 
   applyAiProposal(projectId: string, proposal: AIProposal, section: ManuscriptSection) {

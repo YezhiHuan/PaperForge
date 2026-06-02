@@ -7,7 +7,6 @@ import {
   ChevronDown,
   Clipboard,
   Copy,
-  Download,
   ExternalLink,
   FileText,
   Folder,
@@ -62,7 +61,7 @@ import type {
   ThemeMode
 } from "./types";
 
-type ToolTab = "info" | "agent" | "references" | "export";
+type ToolTab = "agent" | "ref" | "literature";
 type Translate = (key: MessageKey) => string;
 type AppView = "main" | "settings";
 type ActiveMarkdownFile = { path: string; name: string; content: string; originalContent: string };
@@ -127,7 +126,7 @@ function App() {
   const [activeProject, setActiveProject] = useState<ProjectConfig | null>(null);
   const [sections, setSections] = useState<ManuscriptSection[]>([]);
   const [activeSectionId, setActiveSectionId] = useState("");
-  const [editorMode, setEditorMode] = useState<"edit" | "preview" | "full">("edit");
+  const [editorMode, setEditorMode] = useState<"edit" | "preview">("edit");
   const [references, setReferences] = useState<ReferenceItem[]>([]);
   const [citationTasks, setCitationTasks] = useState<CitationTask[]>([]);
   const [literature, setLiterature] = useState<LiteratureItem[]>([]);
@@ -148,6 +147,7 @@ function App() {
   const [fileTree, setFileTree] = useState<FileTreeNode[]>([]);
   const [fileTreeError, setFileTreeError] = useState("");
   const [activeMarkdownFile, setActiveMarkdownFile] = useState<ActiveMarkdownFile | null>(null);
+  const [showFullDraft, setShowFullDraft] = useState(false);
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [aiModels, setAiModels] = useState<string[]>([]);
   const [settingsStatus, setSettingsStatus] = useState("");
@@ -181,8 +181,8 @@ function App() {
     () => sections.find((section) => section.id === activeSectionId) ?? sections[0],
     [activeSectionId, sections]
   );
-  const activeDocument = activeMarkdownFile ?? activeSection;
-  const activeDocumentTitle = activeMarkdownFile?.name ?? activeSection?.title ?? "No section";
+  const activeDocument = showFullDraft ? null : activeMarkdownFile ?? activeSection;
+  const activeDocumentTitle = showFullDraft ? tr("writing.fullDraft") : activeMarkdownFile?.name ?? activeSection?.title ?? "No section";
 
   const addLog = (level: AppLog["level"], message: string) => {
     const log = api.appLog(level, message);
@@ -287,6 +287,7 @@ function App() {
     setSections(loadedSections);
     setActiveSectionId(loadedSections[0]?.id ?? "");
     setActiveMarkdownFile(null);
+    setShowFullDraft(false);
     setReferences(refsResult.status === "fulfilled" ? refsResult.value : []);
     setCitationTasks(tasksResult.status === "fulfilled" ? tasksResult.value : []);
     setLiterature(litResult.status === "fulfilled" ? litResult.value : []);
@@ -354,9 +355,10 @@ function App() {
       const nextProjects = await api.listProjects();
       setProjects(nextProjects);
       if (activeProject?.id === project.id) {
-        setActiveProject(null);
-        setSections([]);
-        setReferences([]);
+      setActiveProject(null);
+      setSections([]);
+      setShowFullDraft(false);
+      setReferences([]);
         setCitationTasks([]);
         setLiterature([]);
         setClaims([]);
@@ -433,6 +435,7 @@ function App() {
     setSections(loadedSections);
     setActiveSectionId(section.id);
     setActiveMarkdownFile(null);
+    setShowFullDraft(false);
     await refreshFileTree(activeProject.id);
     addLog("success", `Created section: ${section.title}`);
   }
@@ -447,6 +450,7 @@ function App() {
     setProjects((current) => current.map((project) => (project.id === updatedProject.id ? updatedProject : project)));
     setSections((current) => current.map((item) => (item.id === renamed.id ? renamed : item)));
     setActiveSectionId(renamed.id);
+    setShowFullDraft(false);
     addLog("info", `Renamed section: ${renamed.title}. File path kept.`);
   }
 
@@ -472,11 +476,13 @@ function App() {
     if (section) {
       setActiveMarkdownFile(null);
       setActiveSectionId(section.id);
+      setShowFullDraft(false);
       return;
     }
     try {
       const file = await api.readTextFile(activeProject.id, path);
       setActiveSectionId("");
+      setShowFullDraft(false);
       setActiveMarkdownFile({
         path: file.path,
         name: file.path.split("/").pop() ?? file.path,
@@ -735,6 +741,15 @@ function App() {
     }
   }
 
+  async function testPandoc() {
+    try {
+      setSettingsStatus("Testing Pandoc...");
+      setSettingsStatus(await api.testPandoc(draftSettings));
+    } catch (error) {
+      setSettingsStatus(errorMessage(error, "Pandoc test failed."));
+    }
+  }
+
   async function fetchAiModels() {
     try {
       setSettingsStatus("Fetching models...");
@@ -748,16 +763,13 @@ function App() {
 
   return (
     <div className="min-h-screen bg-[var(--bg)] text-[var(--text)]">
-      <TopBar
-        project={activeProject}
-        onDashboard={() => { setView("main"); setActiveProject(null); }}
-        onNew={openCreateModal}
-        onSettings={() => setView("settings")}
-        version={APP_VERSION}
-        t={tr}
-        language={settings.language}
-        onOpenReferences={() => setToolTab("references")}
-      />
+        <TopBar
+          project={activeProject}
+          onDashboard={() => { setView("main"); setActiveProject(null); }}
+          version={APP_VERSION}
+          t={tr}
+          language={settings.language}
+        />
 
       {view === "settings" ? (
         <SettingsPage
@@ -765,9 +777,15 @@ function App() {
           setSettings={applySettings}
           onBack={() => setView("main")}
           onTestConnection={testAiConnection}
+          onTestPandoc={testPandoc}
           onFetchModels={fetchAiModels}
           models={aiModels}
           status={settingsStatus}
+          activeProject={activeProject}
+          exportJob={exportJob}
+          exportRunning={exportRunning}
+          runExport={runExport}
+          openOutputFolder={openOutputFolder}
           t={tr}
         />
       ) : !activeProject ? (
@@ -790,7 +808,7 @@ function App() {
             sections={sections}
             expandedFolders={expandedFolders}
             setExpandedFolders={setExpandedFolders}
-            setActiveSectionId={setActiveSectionId}
+            setActiveSectionId={(id) => { setActiveSectionId(id); setActiveMarkdownFile(null); setShowFullDraft(false); }}
             onCreateSection={createSectionFromPrompt}
             onRenameSection={renameSectionFromPrompt}
             onSettings={() => setView("settings")}
@@ -798,6 +816,8 @@ function App() {
             fileTreeError={fileTreeError}
             onRefreshFiles={() => refreshFileTree(activeProject.id)}
             onOpenTextFile={openMarkdownFile}
+            onOpenFullDraft={() => { setActiveMarkdownFile(null); setShowFullDraft(true); }}
+            fullDraftActive={showFullDraft}
             activeSectionId={activeSectionId}
             activeFilePath={activeMarkdownFile?.path ?? activeSection?.path}
             mode={settings.sidebarMode ?? "writing"}
@@ -828,9 +848,11 @@ function App() {
                 <button disabled={!activeDocument} className={editorMode === "preview" ? "seg active" : "seg"} onClick={() => setEditorMode("preview")}>
                   {tr("actions.preview")}
                 </button>
-                <button disabled={!activeDocument} className={editorMode === "full" ? "seg active" : "seg"} onClick={() => setEditorMode("full")} title={tr("writing.fullPreview")}>
-                  <FileText size={14} /> {tr("writing.fullPreview")}
-                </button>
+                {showFullDraft && (
+                  <button className="seg" onClick={() => activeProject && refreshFileTree(activeProject.id)} title={tr("actions.refresh")}>
+                    <RefreshCw size={14} /> {tr("actions.refresh")}
+                  </button>
+                )}
                 <button className="secondary-btn" onClick={createSectionFromPrompt}>
                   <Plus size={15} /> {tr("actions.createSection")}
                 </button>
@@ -840,7 +862,30 @@ function App() {
               </div>
             </div>
 
-            {activeDocument ? (() => {
+            {showFullDraft ? (
+              <motion.article
+                key="full"
+                variants={panelVariants}
+                initial="hidden"
+                animate="show"
+                exit="exit"
+                className="preview preview-full"
+              >
+                {(() => {
+                  const combined = mergeSections(sections);
+                  if (!combined.trim()) {
+                    return (
+                      <div className="manuscript-empty">
+                        <FileText size={34} />
+                        <h2>{tr("writing.fullPreviewEmpty")}</h2>
+                        <p>{tr("writing.fullPreviewHint")}</p>
+                      </div>
+                    );
+                  }
+                  return <div className="full-preview-body" dangerouslySetInnerHTML={{ __html: markdownToPreview(combined) }} />;
+                })()}
+              </motion.article>
+            ) : activeDocument ? (() => {
               const codeView = activeMarkdownFile !== null && viewerModeFor(activeMarkdownFile.name) === "code";
               const codeLines = codeView ? activeDocument.content.split(/\r?\n/) : [];
               return (
@@ -873,7 +918,7 @@ function App() {
                       </div>
                     ))}
                   </motion.div>
-                ) : editorMode === "preview" ? (
+                ) : (
                   <motion.article
                     key="preview"
                     variants={panelVariants}
@@ -883,31 +928,6 @@ function App() {
                     className="preview"
                     dangerouslySetInnerHTML={{ __html: markdownToPreview(activeDocument.content) }}
                   />
-                ) : (
-                  <motion.article
-                    key="full"
-                    variants={panelVariants}
-                    initial="hidden"
-                    animate="show"
-                    exit="exit"
-                    className="preview preview-full"
-                  >
-                    {(() => {
-                      const combined = mergeSections(sections);
-                      if (!combined.trim()) {
-                        return (
-                          <div className="manuscript-empty">
-                            <FileText size={34} />
-                            <h2>{tr("writing.fullPreviewEmpty")}</h2>
-                            <p>{tr("writing.fullPreviewHint")}</p>
-                          </div>
-                        );
-                      }
-                      return (
-                        <div className="full-preview-body" dangerouslySetInnerHTML={{ __html: markdownToPreview(combined) }} />
-                      );
-                    })()}
-                  </motion.article>
                 )}
               </AnimatePresence>
               );
@@ -985,6 +1005,7 @@ function App() {
             openProjectFolder={openProjectFolder}
             updateProjectMetadata={(partial) => updateProjectMetadata(activeProject, partial)}
             combinedDraft={mergeSections(sections)}
+            currentDocumentContent={activeDocument?.content ?? ""}
             t={tr}
             language={settings.language}
           />
@@ -1025,21 +1046,15 @@ function App() {
 function TopBar({
   project,
   onDashboard,
-  onNew,
-  onSettings,
   version,
   t,
-  language,
-  onOpenReferences,
+  language
 }: {
   project: ProjectConfig | null;
   onDashboard: () => void;
-  onNew: () => void;
-  onSettings: () => void;
   version: string;
   t: Translate;
   language: Language;
-  onOpenReferences: () => void;
 }) {
   return (
     <header className="topbar">
@@ -1049,11 +1064,6 @@ function TopBar({
         <small>v{version}</small>
       </button>
       <div className="topbar-project">{project ? `${displayTitle(project.title, language)} · ${project.manuscriptMode}` : t("app.tagline")}</div>
-      <div className="topbar-actions">
-        <button className="secondary-btn" onClick={onOpenReferences} title="Open Reference List">
-          <BookOpen size={15} /> References
-        </button>
-      </div>
     </header>
   );
 }
@@ -1141,6 +1151,8 @@ function Sidebar({
   fileTreeError,
   onRefreshFiles,
   onOpenTextFile,
+  onOpenFullDraft,
+  fullDraftActive,
   activeSectionId,
   activeFilePath,
   mode,
@@ -1160,6 +1172,8 @@ function Sidebar({
   fileTreeError: string;
   onRefreshFiles: () => void;
   onOpenTextFile: (path: string, extension?: string) => void;
+  onOpenFullDraft: () => void;
+  fullDraftActive: boolean;
   activeSectionId: string;
   activeFilePath?: string;
   mode: SidebarMode;
@@ -1203,6 +1217,9 @@ function Sidebar({
             <button className="tree-file new-section" onClick={onCreateSection}>
               <Plus size={14} /> {t("project.newSection")}
             </button>
+            <button className={fullDraftActive ? "tree-file full-draft active" : "tree-file full-draft"} onClick={onOpenFullDraft}>
+              <FileText size={14} /> {t("writing.fullDraft")}
+            </button>
             {sections.length === 0 && (
               <span className="tree-file muted">{t("project.emptyManuscript")}</span>
             )}
@@ -1236,6 +1253,9 @@ function Sidebar({
         {mode === "files" && (
           <div className="sidebar-files">
             {fileTreeError && <div className="tree-error">{fileTreeError}</div>}
+            <button className={fullDraftActive ? "tree-file full-draft active" : "tree-file full-draft"} onClick={onOpenFullDraft}>
+              <FileText size={14} /> {t("writing.fullDraft")}
+            </button>
             {fileTree.map((node) => (
               <FileTreeItem
                 key={node.relativePath}
@@ -1400,32 +1420,29 @@ function RightPanel(props: {
   openProjectFolder: () => void;
   updateProjectMetadata: (partial: Partial<Pick<ProjectConfig, "title" | "author" | "authors" | "targetJournal" | "manuscriptMode" | "citationStyle" | "exportMode">>) => void;
   combinedDraft: string;
+  currentDocumentContent: string;
   t: Translate;
   language: Language;
 }) {
   const tabs: Array<[ToolTab, string, ReactNode]> = [
-    ["info", props.t("project.projectInfo"), <FileText size={14} />],
-    ["agent", "Agent", <Brain size={14} />],
-    ["references", props.t("project.references"), <BookOpen size={14} />],
-    ["export", props.t("tools.export"), <Download size={14} />]
+    ["ref", props.t("project.ref"), <BookOpen size={14} />],
+    ["literature", props.t("project.literature"), <Library size={14} />]
   ];
 
   return (
     <aside className="right-panel">
       <div className="tab-strip">
         {tabs.map(([id, label, icon]) => (
-          <button key={id} className={props.tab === id ? "tab active" : "tab"} onClick={() => props.setTab(id)}>
+          <button key={id} className={props.tab === id ? "tab active" : "tab"} onClick={() => props.setTab(props.tab === id ? "agent" : id)}>
             {icon} {label}
           </button>
         ))}
       </div>
       <AnimatePresence mode="wait">
         <motion.div key={props.tab} variants={panelVariants} initial="hidden" animate="show" exit="exit" className="tool-body">
-          {props.tab === "info" && <ProjectInfoTool {...props} />}
           {props.tab === "agent" && <AgentTool {...props} />}
-          {props.tab === "references" && <ReferenceTool {...props} />}
-          {props.tab === "export" && <ExportTool {...props} />}
-          {props.tab === "export" && <ExportTool {...props} />}
+          {props.tab === "ref" && <ReferenceTool {...props} />}
+          {props.tab === "literature" && <LiteratureTool {...props} />}
         </motion.div>
       </AnimatePresence>
     </aside>
@@ -1482,33 +1499,22 @@ function ProjectInfoTool(props: Parameters<typeof RightPanel>[0]) {
 }
 
 function AgentTool(props: Parameters<typeof RightPanel>[0]) {
-  const filteredSkills = props.agentSkills.filter((skill) => skill.type === props.agentMode);
-  const pendingChanges = props.agentRun?.changes.filter((change) => change.status === "pending") ?? [];
   const traceSummary = props.agentChatTraces.length
     ? `${props.agentChatTraces.length} tool call${props.agentChatTraces.length === 1 ? "" : "s"}: ${props.agentChatTraces.map((trace) => trace.tool).join(", ")}`
     : "";
 
   return (
-    <>
-      <h2>Agent</h2>
-      <p className="agent-subtitle">Chat with the project Agent. It can list, read, write, and delete files inside the current paper project.</p>
-
-      <div className="agent-summary">
-        <span className="mode-chip">Project</span>
-        <strong>{displayTitle(props.project.title, props.language)}</strong>
-        <small>{props.project.rootPath}</small>
+    <div className="agent-shell">
+      <div className="agent-header">
+        <h2>CHAT</h2>
       </div>
 
       <div className="agent-chat-window" aria-live="polite">
         {props.agentChat.length === 0 && (
           <div className="agent-chat-empty">
-            <Brain size={22} />
-            <p>Ask the Agent to list files, read a section, draft a paragraph, or clean up a draft.</p>
-            <div className="chip-row">
-              <button type="button" className="chip" onClick={() => props.setAgentChatInput("List all files in this project.")}>List project files</button>
-              <button type="button" className="chip" onClick={() => props.setAgentChatInput("Summarize the current manuscript.")}>Summarize manuscript</button>
-              <button type="button" className="chip" onClick={() => props.setAgentChatInput("Read the first manuscript section and check for [CITE: key] placeholders.")}>Check citations</button>
-            </div>
+            <Brain size={26} />
+            <h3>{props.t("agent.build")}</h3>
+            <p>{props.t("agent.inaccurate")}</p>
           </div>
         )}
         {props.agentChat.map((message, index) => {
@@ -1559,12 +1565,13 @@ function AgentTool(props: Parameters<typeof RightPanel>[0]) {
         </div>
       )}
 
+      <p className="agent-tip">{props.t("agent.tip")}</p>
       <form
         className="agent-chat-input"
         onSubmit={(event) => { event.preventDefault(); props.sendAgentChat(); }}
       >
         <textarea
-          placeholder="Ask the Agent something. Examples: list files, read introduction.md, write a draft, delete scratch.md."
+          placeholder={props.t("agent.placeholder")}
           value={props.agentChatInput}
           onChange={(event) => props.setAgentChatInput(event.target.value)}
           onKeyDown={(event) => {
@@ -1574,101 +1581,16 @@ function AgentTool(props: Parameters<typeof RightPanel>[0]) {
             }
           }}
           disabled={props.agentChatRunning}
-          rows={2}
+          rows={3}
         />
         <div className="agent-chat-actions">
-          <button type="button" className="secondary-btn" onClick={props.clearAgentChat} disabled={props.agentChatRunning || props.agentChat.length === 0}>
-            <Trash2 size={13} /> Clear
-          </button>
+          <span className="agent-auto-chip">{props.t("agent.auto")}</span>
           <button type="submit" className="primary-btn" disabled={props.agentChatRunning || !props.agentChatInput.trim()}>
-            {props.agentChatRunning ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />} Send
+            {props.agentChatRunning ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />} {props.t("actions.send")}
           </button>
         </div>
       </form>
-
-      <details className="agent-legacy">
-        <summary>Advanced: Run a built-in Skill</summary>
-        <div className="stack">
-          <label>
-            Mode
-            <select value={props.agentMode} onChange={(event) => { props.setAgentMode(event.target.value as AgentMode); props.setAgentSkillId("auto"); }}>
-              <option value="ask">Ask</option>
-              <option value="edit">Edit</option>
-              <option value="operate">Operate</option>
-            </select>
-          </label>
-          <label>
-            Skill
-            <select value={props.agentSkillId} onChange={(event) => props.setAgentSkillId(event.target.value)}>
-              <option value="auto">Auto</option>
-              {filteredSkills.map((skill) => <option value={skill.id} key={skill.id}>{skill.name}</option>)}
-            </select>
-          </label>
-          <label>
-            Request
-            <textarea className="small-area" value={props.agentRequest} onChange={(event) => props.setAgentRequest(event.target.value)} />
-          </label>
-        </div>
-        <button className="primary-btn wide" disabled={props.agentLoading} onClick={props.runAgent}>
-          {props.agentLoading ? <Loader2 className="spin" size={15} /> : <Sparkles size={15} />} Run Skill
-        </button>
-
-        {props.agentRun && (
-          <div className="agent-run">
-            <div className="proposal-card">
-              <span className={`status ${props.agentRun.status}`}>{props.agentRun.status}</span>
-              <strong>{props.agentRun.skillId}</strong>
-              <p>{props.agentRun.report}</p>
-            </div>
-
-            <details open>
-              <summary>Plan</summary>
-              <div className="agent-list">
-                <strong>{props.agentRun.plan.summary}</strong>
-                {props.agentRun.plan.steps.map((step) => <span key={step}>{step}</span>)}
-              </div>
-            </details>
-
-            {props.agentRun.changes.length > 0 && (
-              <details open={pendingChanges.length > 0}>
-                <summary>Files To Change</summary>
-                <pre>{props.agentRun.plan.filesToChange.join("\n") || "None"}</pre>
-              </details>
-            )}
-
-            {props.agentRun.changes.map((change) => (
-              <div className="proposal-card" key={change.id}>
-                <span className={`status ${change.status}`}>{change.status}</span>
-                <strong>{change.path}</strong>
-                <pre className="diff-preview">{change.diff}</pre>
-                {change.status === "pending" && (
-                  <div className="row-actions">
-                    <button onClick={() => props.applyAgentChange(change.id)}>Apply</button>
-                    <button onClick={props.rejectAgentRun}>Reject</button>
-                    <button onClick={() => navigator.clipboard?.writeText(change.diff)}>Copy diff</button>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        <details>
-          <summary>Agent Log</summary>
-          <div className="card-list">
-            {props.agentLogs.length === 0 && <div className="validation-card info"><span>No Agent runs yet.</span></div>}
-            {props.agentLogs.map((entry) => (
-              <div className="task-card" key={entry.id}>
-                <span className={`status ${entry.success ? "success" : "failed"}`}>{entry.success ? "success" : "failed"}</span>
-                <strong>{entry.skillId}</strong>
-                <p>{entry.request}</p>
-                <small>{entry.mode} · {entry.createdAt}</small>
-              </div>
-            ))}
-          </div>
-        </details>
-      </details>
-    </>
+    </div>
   );
 }
 
@@ -1706,18 +1628,53 @@ function AiTool(props: Parameters<typeof RightPanel>[0]) {
 }
 
 function ReferenceTool(props: Parameters<typeof RightPanel>[0]) {
+  const [query, setQuery] = useState("");
+  const citedKeys = Array.from(new Set(
+    [...props.currentDocumentContent.matchAll(/\[CITE:\s*([^\]]+)\]|\[@([^\]]+)\]|\\cite\{([^}]+)\}/g)]
+      .map((match) => match[1] ?? match[2] ?? match[3])
+      .flatMap((key) => key.split(",").map((item) => item.trim()).filter(Boolean))
+  ));
+  const referenceKeys = new Set(props.references.map((ref) => ref.citekey));
+  const filtered = props.references.filter((ref) => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return true;
+    return [ref.citekey, ref.title, ...ref.authors].some((value) => value.toLowerCase().includes(needle));
+  });
   return (
     <>
-      <h2>Reference Manager</h2>
+      <h2>{props.t("project.ref")}</h2>
+      <div className="search-row ref-search">
+        <input placeholder="Search citation key" value={query} onChange={(event) => setQuery(event.target.value)} />
+        <button type="button" onClick={props.scanTasks}><RefreshCw size={15} /></button>
+      </div>
+      {citedKeys.length > 0 && (
+        <div className="reference-current">
+          <strong>Current document</strong>
+          <div className="chip-row">
+            {citedKeys.map((key) => (
+              <span className={referenceKeys.has(key) ? "chip ref-ok" : "chip ref-missing"} key={key}>
+                {key}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
       <textarea className="bibtex-area" placeholder="@article{Zhang2023,...}" value={props.bibtex} onChange={(event) => props.setBibtex(event.target.value)} />
       <button className="primary-btn wide" onClick={props.saveBibtex}>Parse + save references.bib</button>
       <div className="card-list">
-        {props.references.map((ref) => (
+        {filtered.map((ref) => (
           <div className="reference-card" key={ref.citekey}>
             <strong>{ref.citekey}</strong>
             <p>{ref.title}</p>
             <small>{ref.authors.join(", ")} {ref.year}</small>
             <button onClick={() => props.insertCitation(ref.citekey)}>Insert {formatCitation(props.project.manuscriptMode, ref.citekey)}</button>
+          </div>
+        ))}
+        {props.citationTasks.map((task) => (
+          <div className="task-card" key={task.id}>
+            <span className={`status ${task.status}`}>{task.status}</span>
+            <strong>{task.placeholder}</strong>
+            <p>{task.reference?.title ?? "No matched reference metadata"}</p>
           </div>
         ))}
       </div>
@@ -1752,7 +1709,7 @@ function CitationTool(props: Parameters<typeof RightPanel>[0]) {
 function LiteratureTool(props: Parameters<typeof RightPanel>[0]) {
   return (
     <>
-      <h2>Literature Library</h2>
+      <h2>{props.t("project.literature")}</h2>
       <form className="stack" onSubmit={props.addLiterature}>
         <input placeholder="filename.pdf" value={props.litForm.filename} onChange={(event) => props.setLitForm({ ...props.litForm, filename: event.target.value })} />
         <input placeholder="local path" value={props.litForm.path} onChange={(event) => props.setLitForm({ ...props.litForm, path: event.target.value })} />
@@ -1805,7 +1762,7 @@ function cleanExportPath(raw: string): string {
 
 function exportKindTitle(job: ExportJob | null): string {
   if (!job) return "Export";
-  return "Export ready";
+  return job.status === "failed" ? "Export failed" : "Export ready";
 }
 
 function ExportResult({ job, warnings, t, onOpenOutputFolder }: {
@@ -1834,12 +1791,13 @@ function ExportResult({ job, warnings, t, onOpenOutputFolder }: {
       <div className="export-result-head">
         <span className={`export-status-pill ${status}`}>
           {statusIcon}
-          <span>{status}</span>
+          <span>{status === "success" ? t("export.succeeded") : status === "failed" ? t("export.failed") : status}</span>
         </span>
         <span className="export-kind">{exportKindTitle(job)}</span>
       </div>
       {path ? (
         <div className="export-path">
+          <strong>{t("export.outputPath")}:</strong>
           <code title={job.outputPath}>{path}</code>
           <div className="export-path-actions">
             <button className="icon-btn" onClick={copyPath} title="Copy path">
@@ -1852,6 +1810,12 @@ function ExportResult({ job, warnings, t, onOpenOutputFolder }: {
         </div>
       ) : (
         <p className="export-path muted">{t("export.preparing")}</p>
+      )}
+      {status === "failed" && job.logs[0] && (
+        <div className="validation-card error">
+          <strong>{t("export.failureReason")}</strong>
+          <span>{job.logs[0]}</span>
+        </div>
       )}
       {warnings.length > 0 && (
         <div className="export-warnings">
@@ -1870,7 +1834,7 @@ function ExportResult({ job, warnings, t, onOpenOutputFolder }: {
       )}
       {job.logs.length > 0 && (
         <details className="export-logs">
-          <summary>Details</summary>
+          <summary>{status === "failed" ? t("export.stderr") : "Details"}</summary>
           <pre>{job.logs.join("\n")}</pre>
         </details>
       )}
@@ -1906,18 +1870,30 @@ function SettingsPage({
   setSettings,
   onBack,
   onTestConnection,
+  onTestPandoc,
   onFetchModels,
   models,
   status,
+  activeProject,
+  exportJob,
+  exportRunning,
+  runExport,
+  openOutputFolder,
   t
 }: {
   settings: AppSettings;
   setSettings: (settings: AppSettings) => void;
   onBack: () => void;
   onTestConnection: () => void;
+  onTestPandoc: () => void;
   onFetchModels: () => void;
   models: string[];
   status: string;
+  activeProject: ProjectConfig | null;
+  exportJob: ExportJob | null;
+  exportRunning: boolean;
+  runExport: (mode: ManuscriptMode) => void;
+  openOutputFolder: () => void;
   t: Translate;
 }) {
   const themeOptions: Array<[ThemeMode, string]> = [["light", "Light"], ["dark", "Dark"], ["system", "System"], ["eyeCare", "Eye-care"]];
@@ -2012,7 +1988,36 @@ function SettingsPage({
         </section>
         <section className="settings-card">
           <h2>Export</h2>
-          <p>Markdown package remains the stable export target. Word and LaTeX use Pandoc draft exports and report warnings separately from success.</p>
+          <p>Markdown package remains stable. Word and LaTeX use Pandoc and optional templates.</p>
+          <SettingField label={t("settings.pandocExecutable")} description="Optional. Leave blank to use PATH or PaperForge auto-detection.">
+            <input value={settings.pandocExecutablePath} onChange={(event) => setSettings({ ...settings, pandocExecutablePath: event.target.value })} placeholder="pandoc or C:\Program Files\Pandoc\pandoc.exe" />
+          </SettingField>
+          <SettingField label={t("settings.wordTemplate")} description="Optional .docx reference doc passed as --reference-doc.">
+            <input value={settings.wordTemplatePath} onChange={(event) => setSettings({ ...settings, wordTemplatePath: event.target.value })} placeholder="template.docx" />
+          </SettingField>
+          <SettingField label={t("settings.latexTemplate")} description="Optional .tex template passed as --template.">
+            <input value={settings.latexTemplatePath} onChange={(event) => setSettings({ ...settings, latexTemplatePath: event.target.value })} placeholder="template.tex" />
+          </SettingField>
+          <div className="row-actions">
+            <button onClick={onTestPandoc}>{t("settings.testPandoc")}</button>
+          </div>
+          {status && <p className="settings-status">{status}</p>}
+          {activeProject && (
+            <div className="settings-export-actions">
+              <button onClick={() => runExport("markdown")} disabled={exportRunning}>{t("export.markdownPackage")}</button>
+              <button onClick={() => runExport("word")} disabled={exportRunning}>{t("export.wordDraft")}</button>
+              <button onClick={() => runExport("latex")} disabled={exportRunning}>{t("export.latexProject")}</button>
+            </div>
+          )}
+          {exportRunning && <div className="running-dots">{t("export.running")}<span>.</span><span>.</span><span>.</span></div>}
+          {exportJob && (
+            <ExportResult
+              job={exportJob}
+              warnings={[]}
+              t={t}
+              onOpenOutputFolder={openOutputFolder}
+            />
+          )}
         </section>
         <section className="settings-card">
           <h2>About</h2>

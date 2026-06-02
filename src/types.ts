@@ -259,6 +259,9 @@ export interface AppSettings {
   llmProvider: LlmProviderSettings;
   defaultCitationStyle: string;
   defaultExportMode: ManuscriptMode;
+  pandocExecutablePath: string;
+  wordTemplatePath: string;
+  latexTemplatePath: string;
   themeMode: ThemeMode;
   language: Language;
   sidebarMode?: SidebarMode;

@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.3.0
+
+### Added
+- Settings now persist Pandoc executable path, Word `.docx` reference-doc template path, and LaTeX `.tex` template path.
+- Word export passes `--reference-doc` when a Word template is configured; LaTeX export passes `--template` when a LaTeX template is configured.
+- Added a Settings action to test the configured Pandoc executable and template paths.
+
+### Changed
+- Agent UI now uses a simpler Codex / VSCode Chat-style layout with a `CHAT` title, centered empty state, safety note, tip, multiline input, Auto chip, and Send button.
+- The third column top now keeps only **Ref** / **引用** and **Literature** / **文献**.
+- Ref is now the citation workspace for inserting citation keys, searching references, seeing keys cited by the current document, and spotting missing metadata.
+- Literature is now the full literature / PDF / attachment record workspace.
+- Full Draft / 总体 moved into the first-column section/file list as a normal virtual node and renders the merged manuscript preview in the center editor.
+- Export controls and export result rendering are consolidated into one Settings export section.
+
+### Fixed
+- Removed duplicate ExportTool rendering that showed the export area twice.
+- Removed duplicate visible cite, claim, library, references, top-right References, and top-right new/settings-style entries from current navigation.
+
 ## v2.2.2
 
 ### Fixed

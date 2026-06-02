@@ -30,7 +30,8 @@ export const messages = {
       clearChat: "Clear",
       send: "Send",
       thinking: "Thinking…",
-      advancedSkill: "Advanced: Run a built-in Skill"
+      advancedSkill: "Advanced: Run a built-in Skill",
+      refresh: "Refresh"
     },
     dashboard: {
       headline: "Write papers from local folders, citations, evidence, and AI proposals.",
@@ -49,12 +50,14 @@ export const messages = {
       projectInfo: "Project Info",
       newSection: "New Section",
       emptyManuscript: "Empty manuscript",
-      mvpFolder: "MVP folder"
+      mvpFolder: "MVP folder",
+      ref: "Ref"
     },
     writing: {
       editor: "Editor",
       filePreview: "File Preview",
-      fullPreview: "Full Preview",
+      fullPreview: "Full Draft",
+      fullDraft: "Full Draft",
       fullPreviewEmpty: "No merged draft yet",
       fullPreviewHint: "Create or save a section to see the combined preview here."
     },
@@ -83,6 +86,13 @@ export const messages = {
       export: "Export",
       settings: "Settings"
     },
+    agent: {
+      build: "Build with Agent",
+      inaccurate: "AI responses may be inaccurate",
+      tip: "Tip: ask for file reads, draft edits, or small project operations.",
+      placeholder: "Ask Agent to list files, read a section, draft text, or update a project file.",
+      auto: "Auto"
+    },
     export: {
       markdownPackage: "Export Markdown Package",
       manifestJson: "Export Manifest JSON",
@@ -93,7 +103,12 @@ export const messages = {
       latexSoon: "Requires Pandoc. PaperForge will try automatic install on Windows.",
       running: "Export running",
       combinedPreview: "Combined draft preview",
-      preparing: "Preparing output"
+      preparing: "Preparing output",
+      succeeded: "Export succeeded",
+      failed: "Export failed",
+      outputPath: "Export path",
+      failureReason: "Failure reason",
+      stderr: "stderr"
     },
     settings: {
       language: "Language",
@@ -107,7 +122,11 @@ export const messages = {
       baseUrl: "Base URL",
       apiKey: "API key",
       model: "Model",
-      citationStyle: "Citation style"
+      citationStyle: "Citation style",
+      pandocExecutable: "Pandoc executable",
+      wordTemplate: "Word template",
+      latexTemplate: "LaTeX template",
+      testPandoc: "Test Pandoc"
     }
   },
   zh: {
@@ -139,7 +158,8 @@ export const messages = {
       clearChat: "清空",
       send: "发送",
       thinking: "正在思考…",
-      advancedSkill: "高级：运行内置技能"
+      advancedSkill: "高级：运行内置技能",
+      refresh: "刷新"
     },
     dashboard: {
       headline: "从本地文件夹、引用、证据和 AI 建议开始写论文。",
@@ -158,12 +178,14 @@ export const messages = {
       projectInfo: "项目信息",
       newSection: "新建章节",
       emptyManuscript: "空稿件",
-      mvpFolder: "MVP 文件夹"
+      mvpFolder: "MVP 文件夹",
+      ref: "引用"
     },
     writing: {
       editor: "编辑",
       filePreview: "当前文件预览",
-      fullPreview: "总体预览",
+      fullPreview: "总体",
+      fullDraft: "总体",
       fullPreviewEmpty: "暂无合并稿件",
       fullPreviewHint: "新建或保存章节后,合并稿件会显示在这里。"
     },
@@ -192,6 +214,13 @@ export const messages = {
       export: "导出",
       settings: "设置"
     },
+    agent: {
+      build: "使用 Agent 构建",
+      inaccurate: "AI 回复可能不准确",
+      tip: "提示：可以让 Agent 读取文件、修改草稿或执行小型项目操作。",
+      placeholder: "让 Agent 列出文件、读取章节、起草内容或更新项目文件。",
+      auto: "自动"
+    },
     export: {
       markdownPackage: "导出 Markdown 文件夹",
       manifestJson: "导出项目 JSON",
@@ -202,7 +231,12 @@ export const messages = {
       latexSoon: "需要 Pandoc。Windows 上会尝试自动安装。",
       running: "正在导出",
       combinedPreview: "合并稿预览",
-      preparing: "正在准备输出"
+      preparing: "正在准备输出",
+      succeeded: "导出成功",
+      failed: "导出失败",
+      outputPath: "导出路径",
+      failureReason: "失败原因",
+      stderr: "stderr"
     },
     settings: {
       language: "语言",
@@ -216,7 +250,11 @@ export const messages = {
       baseUrl: "Base URL",
       apiKey: "API Key",
       model: "模型",
-      citationStyle: "引用格式"
+      citationStyle: "引用格式",
+      pandocExecutable: "Pandoc 可执行文件",
+      wordTemplate: "Word 模板",
+      latexTemplate: "LaTeX 模板",
+      testPandoc: "测试 Pandoc"
     }
   }
 } as const;

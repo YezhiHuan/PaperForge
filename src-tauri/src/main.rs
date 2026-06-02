@@ -11,7 +11,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const APP_VERSION: &str = "2.2.1";
+const APP_VERSION: &str = "2.3.0";
 const PANDOC_INSTALL_COMMAND: &str = "winget install --id JohnMacFarlane.Pandoc -e --source winget --accept-package-agreements --accept-source-agreements --silent";
 const PANDOC_REQUIRED_MESSAGE: &str =
     "Pandoc is required for document conversion. Please install Pandoc and try again.";
@@ -755,6 +755,12 @@ struct AppSettings {
     llm_provider: LlmProviderSettings,
     default_citation_style: String,
     default_export_mode: ManuscriptMode,
+    #[serde(default)]
+    pandoc_executable_path: String,
+    #[serde(default)]
+    word_template_path: String,
+    #[serde(default)]
+    latex_template_path: String,
     #[serde(default = "default_theme_mode")]
     theme_mode: ThemeMode,
     #[serde(default = "default_language")]
@@ -1463,6 +1469,9 @@ fn default_settings() -> AppSettings {
         },
         default_citation_style: "apa".to_string(),
         default_export_mode: ManuscriptMode::Markdown,
+        pandoc_executable_path: String::new(),
+        word_template_path: String::new(),
+        latex_template_path: String::new(),
         theme_mode: ThemeMode::Light,
         language: Language::En,
         sidebar_mode: SidebarMode::Writing,
@@ -3429,9 +3438,17 @@ fn find_pandoc_executable() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("pandoc"))
 }
 
-fn pandoc_version_from_command() -> Result<String, String> {
-    let pandoc = find_pandoc_executable();
-    let output = Command::new(&pandoc)
+fn pandoc_executable_from_settings(settings: &AppSettings) -> PathBuf {
+    let configured = settings.pandoc_executable_path.trim();
+    if configured.is_empty() {
+        find_pandoc_executable()
+    } else {
+        PathBuf::from(configured)
+    }
+}
+
+fn pandoc_version_from_command_path(pandoc: &Path) -> Result<String, String> {
+    let output = Command::new(pandoc)
         .arg("--version")
         .output()
         .map_err(|err| format!("{} ({})", err, pandoc.to_string_lossy()))?;
@@ -3442,14 +3459,26 @@ fn pandoc_version_from_command() -> Result<String, String> {
     }
 }
 
+fn pandoc_version_from_command() -> Result<String, String> {
+    let pandoc = find_pandoc_executable();
+    pandoc_version_from_command_path(&pandoc)
+}
+
+fn pandoc_version_from_settings(settings: &AppSettings) -> Result<String, String> {
+    let pandoc = pandoc_executable_from_settings(settings);
+    pandoc_version_from_command_path(&pandoc)
+}
+
 #[tauri::command]
 fn get_pandoc_version() -> Result<String, String> {
-    pandoc_version_from_command()
+    let settings = read_settings().unwrap_or_else(|_| default_settings());
+    pandoc_version_from_settings(&settings)
 }
 
 #[tauri::command]
 fn check_pandoc_installed() -> PandocStatus {
-    match pandoc_version_from_command() {
+    let settings = read_settings().unwrap_or_else(|_| default_settings());
+    match pandoc_version_from_settings(&settings) {
         Ok(version) => PandocStatus {
             installed: true,
             version: Some(first_line(&version)),
@@ -3461,6 +3490,13 @@ fn check_pandoc_installed() -> PandocStatus {
             error: Some(error),
         },
     }
+}
+
+#[tauri::command]
+fn test_pandoc(settings: AppSettings) -> Result<String, String> {
+    validate_pandoc_templates(&settings)?;
+    pandoc_version_from_settings(&settings)
+        .map(|version| format!("Pandoc available: {}", first_line(&version)))
 }
 
 fn run_winget_pandoc_install() -> Result<(), String> {
@@ -3543,6 +3579,13 @@ fn ensure_pandoc_available() -> Result<Vec<String>, Vec<String>> {
     ensure_pandoc_available_with(pandoc_version_from_command, run_winget_pandoc_install)
 }
 
+fn ensure_pandoc_available_for_settings(settings: &AppSettings) -> Result<Vec<String>, Vec<String>> {
+    if settings.pandoc_executable_path.trim().is_empty() {
+        return ensure_pandoc_available();
+    }
+    ensure_pandoc_available_with(|| pandoc_version_from_settings(settings), run_winget_pandoc_install)
+}
+
 fn failed_export_job(project_id: String, mode: ManuscriptMode, logs: Vec<String>) -> ExportJob {
     ExportJob {
         id: format!("export_{}", Uuid::new_v4()),
@@ -3560,8 +3603,8 @@ fn append_warn(logs: &mut Vec<String>, label: &str, err: impl ToString) {
     logs.push(format!("WARN: {}: {}", label, err.to_string()));
     }
 
-fn run_pandoc(args: &[String], current_dir: &Path) -> Result<String, String> {
-    let pandoc = find_pandoc_executable();
+fn run_pandoc(args: &[String], current_dir: &Path, settings: &AppSettings) -> Result<String, String> {
+    let pandoc = pandoc_executable_from_settings(settings);
     let output = Command::new(&pandoc)
         .args(args)
         .current_dir(current_dir)
@@ -3574,7 +3617,33 @@ fn run_pandoc(args: &[String], current_dir: &Path) -> Result<String, String> {
     }
 }
 
-fn word_pandoc_args(has_reference_doc: bool) -> Vec<String> {
+fn resolve_template_path(raw: &str, extension: &str, label: &str) -> Result<Option<String>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let path = resolve_app_path(trimmed)?;
+    if !path.exists() {
+        return Err(format!("{} file does not exist: {}", label, trimmed));
+    }
+    if path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case(extension))
+        != Some(true)
+    {
+        return Err(format!("{} must be a .{} file: {}", label, extension, trimmed));
+    }
+    Ok(Some(path.canonicalize().map_err(|err| err.to_string())?.to_string_lossy().to_string()))
+}
+
+fn validate_pandoc_templates(settings: &AppSettings) -> Result<(), String> {
+    resolve_template_path(&settings.word_template_path, "docx", "Word template")?;
+    resolve_template_path(&settings.latex_template_path, "tex", "LaTeX template")?;
+    Ok(())
+}
+
+fn word_pandoc_args(reference_doc: Option<String>) -> Vec<String> {
     let mut args = vec![
         "exports/_intermediate/paper-word.md".to_string(),
         "-f".to_string(),
@@ -3584,14 +3653,15 @@ fn word_pandoc_args(has_reference_doc: bool) -> Vec<String> {
         "-o".to_string(),
         "exports/word/paper.docx".to_string(),
     ];
-    if has_reference_doc {
-        args.push("--reference-doc=exports/word/reference.docx".to_string());
+    if let Some(reference_doc) = reference_doc {
+        args.push("--reference-doc".to_string());
+        args.push(reference_doc);
     }
     args
 }
 
-fn latex_pandoc_args() -> Vec<String> {
-    vec![
+fn latex_pandoc_args(template: Option<String>) -> Vec<String> {
+    let mut args = vec![
         "exports/_intermediate/paper-latex.md".to_string(),
         "-f".to_string(),
         "markdown+raw_tex".to_string(),
@@ -3600,7 +3670,12 @@ fn latex_pandoc_args() -> Vec<String> {
         "-s".to_string(),
         "-o".to_string(),
         "exports/latex/paper.tex".to_string(),
-    ]
+    ];
+    if let Some(template) = template {
+        args.push("--template".to_string());
+        args.push(template);
+    }
+    args
 }
 
 fn copy_dir_recursive(
@@ -3885,7 +3960,12 @@ fn export_latex_placeholder(project_id: String) -> Result<ExportJob, String> {
 fn export_word_draft(project_id: String) -> Result<ExportJob, String> {
     let project = project_by_id(&project_id)?;
     let root = PathBuf::from(&project.root_path);
-    let mut logs = match ensure_pandoc_available() {
+    let settings = read_settings().unwrap_or_else(|_| default_settings());
+    let reference_doc = match resolve_template_path(&settings.word_template_path, "docx", "Word template") {
+        Ok(path) => path,
+        Err(error) => return Ok(failed_export_job(project_id, ManuscriptMode::Word, vec![error])),
+    };
+    let mut logs = match ensure_pandoc_available_for_settings(&settings) {
         Ok(logs) => logs,
         Err(logs) => return Ok(failed_export_job(project_id, ManuscriptMode::Word, logs)),
     };
@@ -3898,9 +3978,11 @@ fn export_word_draft(project_id: String) -> Result<ExportJob, String> {
         convert_citations_for_mode(&merged_sections(&project_id)?, &ManuscriptMode::Word)?,
     )
     .map_err(|err| err.to_string())?;
-    let reference_doc = root.join("exports/word/reference.docx");
-    let args = word_pandoc_args(reference_doc.exists());
-    if let Err(error) = run_pandoc(&args, &root) {
+    let args = word_pandoc_args(reference_doc.clone());
+    if let Some(path) = reference_doc {
+        logs.push(format!("Using Word reference doc: {}", path));
+    }
+    if let Err(error) = run_pandoc(&args, &root, &settings) {
         logs.push(format!("Pandoc DOCX export failed: {}", error));
         return Ok(failed_export_job(project_id, ManuscriptMode::Word, logs));
     }
@@ -3934,7 +4016,12 @@ fn export_word_draft(project_id: String) -> Result<ExportJob, String> {
 fn export_latex(project_id: String) -> Result<ExportJob, String> {
     let project = project_by_id(&project_id)?;
     let root = PathBuf::from(&project.root_path);
-    let mut logs = match ensure_pandoc_available() {
+    let settings = read_settings().unwrap_or_else(|_| default_settings());
+    let template = match resolve_template_path(&settings.latex_template_path, "tex", "LaTeX template") {
+        Ok(path) => path,
+        Err(error) => return Ok(failed_export_job(project_id, ManuscriptMode::Latex, vec![error])),
+    };
+    let mut logs = match ensure_pandoc_available_for_settings(&settings) {
         Ok(logs) => logs,
         Err(logs) => return Ok(failed_export_job(project_id, ManuscriptMode::Latex, logs)),
     };
@@ -3947,8 +4034,11 @@ fn export_latex(project_id: String) -> Result<ExportJob, String> {
         convert_citations_for_mode(&merged_sections(&project_id)?, &ManuscriptMode::Latex)?,
     )
     .map_err(|err| err.to_string())?;
-    let args = latex_pandoc_args();
-    if let Err(error) = run_pandoc(&args, &root) {
+    let args = latex_pandoc_args(template.clone());
+    if let Some(path) = template {
+        logs.push(format!("Using LaTeX template: {}", path));
+    }
+    if let Err(error) = run_pandoc(&args, &root, &settings) {
         logs.push(format!("Pandoc LaTeX export failed: {}", error));
         return Ok(failed_export_job(project_id, ManuscriptMode::Latex, logs));
     }
@@ -4535,6 +4625,7 @@ pub fn run() {
             export_latex_placeholder,
             check_pandoc_installed,
             get_pandoc_version,
+            test_pandoc,
             init_workspace,
             read_settings,
             save_settings,
@@ -4853,12 +4944,12 @@ mod tests {
 
     #[test]
     fn word_and_latex_pandoc_args_stay_project_relative() {
-        let word_args = word_pandoc_args(false);
+        let word_args = word_pandoc_args(None);
         assert!(word_args.contains(&"exports/_intermediate/paper-word.md".to_string()));
         assert!(word_args.contains(&"exports/word/paper.docx".to_string()));
         assert!(!word_args.iter().any(|arg| arg.contains("workspace/papers")));
 
-        let latex_args = latex_pandoc_args();
+        let latex_args = latex_pandoc_args(None);
         assert!(latex_args.contains(&"exports/_intermediate/paper-latex.md".to_string()));
         assert!(latex_args.contains(&"exports/latex/paper.tex".to_string()));
         assert!(!latex_args.iter().any(|arg| arg.contains("workspace/papers")));
@@ -4992,11 +5083,12 @@ mod tests {
 
     #[test]
     fn pandoc_args_are_relative_to_project_root() {
-        let word_args = word_pandoc_args(true);
+        let word_args = word_pandoc_args(Some("exports/word/reference.docx".to_string()));
         assert_eq!(word_args[0], "exports/_intermediate/paper-word.md");
         assert!(word_args.contains(&"exports/word/paper.docx".to_string()));
+        assert!(word_args.contains(&"--reference-doc".to_string()));
         assert!(!word_args.iter().any(|arg| arg.contains("workspace/papers")));
-        let latex_args = latex_pandoc_args();
+        let latex_args = latex_pandoc_args(None);
         assert_eq!(latex_args[0], "exports/_intermediate/paper-latex.md");
         assert!(latex_args.contains(&"exports/latex/paper.tex".to_string()));
     }

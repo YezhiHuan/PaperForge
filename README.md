@@ -1,6 +1,6 @@
 # PaperForge
 
-Current version: `2.2.2`
+Current version: `2.3.0`
 
 PaperForge is a local-first AI manuscript writing desktop app. It organizes papers as local folders and connects Markdown sections, references, attachments, exports, and replaceable AI model settings.
 
@@ -29,7 +29,7 @@ npm run build
 npm run tauri build
 ```
 
-Lint is not configured in v2.2.2.
+Lint is not configured in v2.3.0.
 
 ## Workspace Init
 
@@ -57,7 +57,7 @@ workspace/
 
 ```json
 {
-  "version": "2.2.2",
+  "version": "2.3.0",
   "workspaceName": "workspace",
   "createdAt": "...",
   "updatedAt": "...",
@@ -113,7 +113,17 @@ Any text-format file under the project root can be opened from the **Files** tab
 
 ## Export Result Panel
 
-After running any export, the right-panel **Export** tab shows a status pill (`success` / `warning` / `failed` / `running`), a cleaned-up output path (the Windows `\\?\` prefix is stripped, backslashes are normalized to forward slashes), a **Copy path** button, an **Open output folder** button, collapsible **Details** with the raw log lines, and per-warning cards with severity icons. The toast in the activity log no longer shows the raw `\\?\`-prefixed path.
+After running any export from Settings, PaperForge shows a single export result with `Export succeeded` / `Export failed`, a cleaned-up output path (the Windows `\\?\` prefix is stripped, backslashes are normalized to forward slashes), a **Copy path** button, an **Open output folder** button, collapsible logs / stderr, and per-warning cards with severity icons. The toast in the activity log no longer shows the raw `\\?\`-prefixed path.
+
+## v2.3.0 Agent, Ref/Literature, Full Draft, And Pandoc Templates
+
+- **Agent UI**: the Agent panel now uses a compact Codex / VSCode Chat style: simple `CHAT` title, centered empty state, safety note, tip, multiline input, Auto chip, and Send button. Export, reference, preview, claim, and skill controls are no longer shown inside Agent.
+- **Right panel entries**: the third column top keeps only **Ref** / **引用** and **Literature** / **文献**. The old cite / claim / library / references duplicate entries are hidden.
+- **Ref** handles citation work for the current Markdown document: search citation keys, insert formatted citations, show currently cited keys, and surface missing reference metadata.
+- **Literature** handles the full literature / PDF / attachment record workflow.
+- **Full Draft** / **总体** now appears as a normal virtual node in the first-column Writing and Files lists. Clicking it renders the merged manuscript preview in the center editor area.
+- **Pandoc templates**: Settings now persists a Pandoc executable path, Word `.docx` reference-doc template, and LaTeX `.tex` template. Word export passes `--reference-doc`; LaTeX export passes `--template`. Blank template fields use default Pandoc arguments.
+- **Export UI**: duplicate export rendering is removed. The active export controls and result live in one Settings export section.
 
 
 ## v2.2.2 Navigation, Full Preview And UTF-8 Logging
@@ -132,7 +142,7 @@ After running any export, the right-panel **Export** tab shows a status pill (`s
 - i18n for the new strings is in both English and Chinese.
 ## LLM Settings
 
-v2.2.2 keeps Settings as a standalone page. Open Settings from the top bar or sidebar footer; it no longer occupies the manuscript editor or right panel.
+v2.3.0 keeps Settings as a standalone page. Open Settings from the sidebar footer; it no longer occupies the manuscript editor or right panel.
 
 PaperForge connects the Agent and AI proposal flow to real model providers.
 
@@ -237,7 +247,7 @@ PaperForge does not generate Zotero Word fields. Use Zotero Word plugin for fina
 
 ## Export
 
-v2.2.2 supports:
+v2.3.0 supports:
 
 - Export JSON: writes current paper config to `exports/json/paperforge.json`
 - Export Markdown: writes a package under `exports/markdown/` with `paper.md`, sections, references, attachments, claims, and `export-report.json`
@@ -258,18 +268,17 @@ winget install --id JohnMacFarlane.Pandoc -e --source winget --accept-package-ag
 
 If automatic install fails, run that command manually or install Pandoc from https://pandoc.org/installing.html, then retry export.
 
-If PowerShell can find Pandoc but PaperForge cannot, set an explicit executable path before starting PaperForge:
+If PowerShell can find Pandoc but PaperForge cannot, set an explicit executable path in Settings. The same Settings export area accepts a Word reference `.docx` template and a LaTeX `.tex` template.
 
-```powershell
-$env:PAPERFORGE_PANDOC = "C:\Program Files\Pandoc\pandoc.exe"
-npm run tauri:dev
-```
+Word template command shape: `pandoc input.md -o output.docx --reference-doc template.docx`
+
+LaTeX template command shape: `pandoc input.md -o output.tex --template template.tex`
 
 PaperForge also checks common Windows install locations such as `C:\Program Files\Pandoc\pandoc.exe`, `%LOCALAPPDATA%\Pandoc\pandoc.exe`, `%LOCALAPPDATA%\Programs\Pandoc\pandoc.exe`, winget package folders, and Scoop shims.
 
 ## UI And Theme
 
-The app title displays `PaperForge v2.2.2`.
+The app title displays `PaperForge v2.3.0`.
 
 Default theme is light. Settings can switch light, dark, or eye-care theme. Production Windows desktop builds do not show an extra terminal window.
 
@@ -295,7 +304,7 @@ workspace/.paperforge/ai-models.json
 
 The repository ignores generated workspaces and local secrets.
 
-## v2.2.2 Limits
+## v2.3.0 Limits
 
 - Direct global `paperforge` command may require `npm link` or package installation; npm scripts work from the clone.
 - File picker is not implemented; workspace/project paths can be typed.

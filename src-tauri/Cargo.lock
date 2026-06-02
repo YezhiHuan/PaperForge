@@ -2076,7 +2076,7 @@ dependencies = [
 
 [[package]]
 name = "paperforge"
-version = "2.2.2"
+version = "2.3.0"
 dependencies = [
  "chrono",
  "regex",
